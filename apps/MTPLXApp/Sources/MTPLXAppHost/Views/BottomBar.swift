@@ -55,7 +55,7 @@ struct NewMaxToast: View {
                 .foregroundStyle(Brand.warning)
                 .shadow(color: Brand.warning.opacity(0.5), radius: 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text("NEW SPEED RECORD")
+                Text(tr("NEW SPEED RECORD"))
                     .font(.system(size: 10, weight: .heavy, design: .monospaced))
                     .tracking(2)
                     .foregroundStyle(Brand.textHighlight)
@@ -64,7 +64,7 @@ struct NewMaxToast: View {
                         .font(.system(.title3, design: .rounded).weight(.heavy))
                         .monospacedDigit()
                         .foregroundStyle(Brand.chromeFill)
-                    Text("TPS")
+                    Text(tr("TPS"))
                         .font(.system(size: 10, weight: .heavy, design: .monospaced))
                         .tracking(1.5)
                         .foregroundStyle(Brand.textHighlight.opacity(0.65))

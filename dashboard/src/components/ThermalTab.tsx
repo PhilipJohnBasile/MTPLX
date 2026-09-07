@@ -1,6 +1,5 @@
 import { Card } from "./Card";
 import { FanRingPanel } from "./FanRing";
-import { UniversalThermalRuleBanner } from "./UniversalThermalRuleBanner";
 import { useDashboardStore } from "../state/store";
 import { relativeTime } from "../lib/utils";
 
@@ -9,9 +8,6 @@ export function ThermalTab() {
   const whenS = useDashboardStore((s) => s.thermalWhenS);
   return (
     <div className="grid grid-cols-12 gap-4">
-      <div className="col-span-12">
-        <UniversalThermalRuleBanner />
-      </div>
       <div className="col-span-12 lg:col-span-7">
         <FanRingPanel />
       </div>

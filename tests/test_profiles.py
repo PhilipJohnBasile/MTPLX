@@ -147,6 +147,24 @@ def test_qwen_mtp_batch_construction_flags_are_validated_runtime_overrides() -> 
     }
 
 
+def test_qwen4_m4_routed_down_reduce_is_a_validated_runtime_override() -> None:
+    assert normalize_runtime_env_overrides(
+        {"MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE": True}
+    ) == {"MTPLX_QWEN4_M4_ROUTED_DOWN_REDUCE": "1"}
+
+
+def test_qwen4_m4_routed_down_residual_tail_is_a_validated_runtime_override() -> None:
+    assert normalize_runtime_env_overrides(
+        {"MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL": True}
+    ) == {"MTPLX_QWEN4_M4_ROUTED_DOWN_RESIDUAL_TAIL": "1"}
+
+
+def test_qwen4_m4_routed_glu_is_a_validated_runtime_override() -> None:
+    assert normalize_runtime_env_overrides(
+        {"MTPLX_QWEN4_M4_ROUTED_GLU": True}
+    ) == {"MTPLX_QWEN4_M4_ROUTED_GLU": "1"}
+
+
 def test_fused_qsa_indexer_is_a_validated_runtime_override() -> None:
     assert normalize_runtime_env_overrides({"MTPLX_FUSED_QSA_INDEXER": True}) == {
         "MTPLX_FUSED_QSA_INDEXER": "1"
@@ -183,6 +201,12 @@ def test_qsa_mtp_precompute_is_a_validated_runtime_override() -> None:
     assert normalize_runtime_env_overrides({"MTPLX_QSA_MTP_PRECOMPUTE": True}) == {
         "MTPLX_QSA_MTP_PRECOMPUTE": "1"
     }
+
+
+def test_compiled_verify_growth_reserve_is_a_validated_runtime_override() -> None:
+    assert normalize_runtime_env_overrides(
+        {"MTPLX_COMPILED_VERIFY_GROWTH_RESERVE": 2048}
+    ) == {"MTPLX_COMPILED_VERIFY_GROWTH_RESERVE": "2048"}
 
 
 def test_no_shipped_profile_enables_candidate_qsa_lanes() -> None:

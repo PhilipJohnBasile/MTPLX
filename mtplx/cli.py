@@ -573,6 +573,16 @@ def _comma_floats(value: str) -> tuple[float, ...]:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _comma_ints(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in value.split(",") if part.strip()]
+    if not parts:
+        raise argparse.ArgumentTypeError("expected comma-separated ints")
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -708,6 +718,56 @@ def _add_mtp_toggle_args(parser: argparse.ArgumentParser) -> None:
 SCHEDULER_MODE_CHOICES = tuple(mode.value for mode in SchedulerMode)
 BATCHING_PRESET_CHOICES = ("solo", "latency", "agent", "throughput")
 ADAPTIVE_POLICY_CHOICES = ("none", "streak", "expected_value", "cost")
+
+
+def _add_ngram_prewarm_args(parser: argparse.ArgumentParser) -> None:
+    """The n-gram table pre-read, declared once for both flows.
+
+    A VALUE option, not a boolean: on a 128 GB Mac the ~85 GB of wired
+    weights and a 32 GB table do not both fit alongside the KV cache, so the
+    interesting answer is usually "as much as fits", not yes/no.  `auto` is
+    that answer.  `--no-ngram-prewarm` is kept as the spelling for `off`.
+
+    `default=None` (not `"auto"`) because the flag has an environment
+    counterpart, MTPLX_NGRAM_PREWARM: an argparse default would be
+    indistinguishable from the user typing the flag, and the CLI would
+    silently overrule every shell-set value.
+    """
+
+    parser.add_argument(
+        "--ngram-prewarm",
+        metavar="auto|all|off|GiB",
+        default=None,
+        help=(
+            "How much of the streamed n-gram table to read into the page "
+            "cache at model load. auto (default) warms as much as fits: "
+            "min(table, free - KV reservation - 6 GiB margin). all reads the "
+            "whole table (~2.5 s at ~12 GiB/s for 30 GiB); a bare number is a "
+            "budget in GiB; off serves at the as-found page-cache rate. Cold "
+            "sidecar rows are demand faults at ~1.4 GiB/s and cost 56 vs 68.8 "
+            "tok/s on decode. Environment: MTPLX_NGRAM_PREWARM, which this "
+            "flag overrides."
+        ),
+    )
+    parser.add_argument(
+        "--no-ngram-prewarm",
+        dest="ngram_prewarm",
+        action="store_const",
+        const="off",
+        help="Alias for --ngram-prewarm off.",
+    )
+    parser.add_argument(
+        "--ngram-prewarm-order",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Row-hotness file (.npy of int64 row ids, most-gathered first) "
+            "deciding WHICH rows a partial pre-read warms. Defaults to "
+            "<model>/ngram-hotness.npy when present, else the file prefix is "
+            "read sequentially. Build one with "
+            "the PR #391 harness ngram_row_hotness.py."
+        ),
+    )
 
 
 def _add_batching_args(parser: argparse.ArgumentParser) -> None:
@@ -1264,13 +1324,56 @@ def _cmd_connect(args: argparse.Namespace) -> int:
     return cmd_integrate_public(args)
 
 
+BENCH_ACTIONS = (
+    ("run", "Decode benchmark on a prompt suite (--suite, --max-tokens)"),
+    ("context", "Alias of run"),
+    ("tune", "Find the fastest MTP depth for the current model"),
+    ("aime", "Run the AIME reasoning benchmark against a running server"),
+    ("prefill-ladder", "Prompt-processing speed across context sizes"),
+    ("nightly", "Full regression gate: speed, exactness, quality"),
+    ("suite", "Run the nightly task set now (--quick for the compact set)"),
+    ("compare", "Compare two envelopes (--before/--after) or models (--models)"),
+    ("serve", "Smoke-check a running server's health and metrics"),
+    ("reference", "Print the diagnostic reference-floor plan (not a product gate)"),
+    ("reference-vllm", "Capture a remote vLLM reference run over SSH"),
+)
+
+
+def _format_bench_actions_help() -> str:
+    rows = "\n".join(
+        f"  {_command_cell(action, 16)} {summary}" for action, summary in BENCH_ACTIONS
+    )
+    return (
+        f"""{_heading("MTPLX bench")}
+
+Usage: mtplx bench <action> [options]
+
+Actions:
+{rows}
+
+Examples:
+  mtplx bench run --suite flappy --max-tokens 10000 --no-fanmax
+  mtplx bench nightly --json --dry-run
+
+Run `mtplx bench --help` for every flag.
+"""
+    )
+
+
 def _cmd_bench(args: argparse.Namespace) -> int:
     if getattr(args, "bench_action", None):
         return cmd_bench_public(args)
     if args.profile:
         return _cmd_bench_profile(args)
+    if not (getattr(args, "_cli_flags", None) or set()):
+        # A bare `mtplx bench` is someone asking what bench can do, not a
+        # request to run the legacy manifest scaffold from wherever they
+        # happen to be standing. List the actions and stop.
+        print(_format_bench_actions_help())
+        return 0
     from .benchmarks.runners.harness import run_manifest_only
     from .benchmarks.schema import BenchmarkConfig, now_run_id
+    from .kpi.runtime_kpis import prompt_suite_path
 
     out = (
         Path(args.output)
@@ -1292,22 +1395,22 @@ def _cmd_bench(args: argparse.Namespace) -> int:
     )
     if args.backend != "manifest":
         raise SystemExit("Only backend=manifest is implemented in this scaffold gate")
-    records = run_manifest_only(args.prompts, config, out)
+    records = run_manifest_only(prompt_suite_path(args.prompts), config, out)
     print(json.dumps({"records": len(records), "output": str(out)}, indent=2))
     return 0
 
 
-def _suite_to_prompts(suite: str | None, fallback: str) -> str:
-    if suite is None:
-        return fallback
-    suites = {
-        "default": "mtplx/benchmarks/prompts/default.jsonl",
-        "long_code": "mtplx/benchmarks/prompts/long_code.jsonl",
-        "calibration_coding": "mtplx/benchmarks/prompts/calibration_coding.jsonl",
-    }
-    if suite not in suites:
-        raise SystemExit(f"unknown benchmark suite: {suite}")
-    return suites[suite]
+def _suite_to_prompts(suite: str | None, fallback: str | None) -> str:
+    """Resolve `--suite` (or the `--prompts` fallback) to a packaged suite file.
+
+    Suites live inside the installed package, so this goes through the one
+    suite table in ``mtplx.kpi.runtime_kpis`` and never through the current
+    directory.
+    """
+
+    from .kpi.runtime_kpis import prompt_suite_path
+
+    return prompt_suite_path(suite or fallback)
 
 
 def _cmd_bench_profile(args: argparse.Namespace) -> int:
@@ -1914,6 +2017,7 @@ def _cmd_mtp_adaptive(args: argparse.Namespace) -> int:
         limit=args.limit,
         enable_thinking=False if args.disable_thinking else None,
         compare_ar=args.compare_ar,
+        compare_static=args.compare_static,
         mtp_hidden_variant=args.mtp_hidden_variant,
         mtp_cache_policy=args.mtp_cache_policy,
         mtp_history_policy=args.mtp_history_policy,
@@ -2268,6 +2372,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Streaming chunk size for Open WebUI server",
     )
     _add_batching_args(start_flow_p)
+    _add_ngram_prewarm_args(start_flow_p)
     _add_ssd_session_cache_args(start_flow_p)
     _add_paged_kv_quant_args(start_flow_p)
     _add_adaptive_args(start_flow_p)
@@ -2475,7 +2580,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show the MTPLX stats footer",
     )
     ask_p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    ask_p.add_argument("--expect-python", action="store_true")
+    ask_p.add_argument(
+        "--expect-python", action="store_true",
+        help="Validate the final answer as Python, allowing one enclosing code fence",
+    )
     _add_fan_mode_args(
         ask_p,
         max_help="Compatibility alias for --fan-mode max for this run",
@@ -2845,7 +2953,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Comma-separated MTP depths or Gemma draft blocks to compare against AR",
     )
-    tune_p.add_argument("--max-tokens", type=int, default=512)
+    tune_p.add_argument("--max-tokens", type=int, default=512,
+                        help="Per-case upper bound; the prompt suite's token budget also applies")
     tune_p.add_argument("--limit", type=int, default=1)
     tune_p.add_argument("--seed", type=int, default=0)
     tune_p.add_argument("--run-id")
@@ -3001,6 +3110,13 @@ def build_parser() -> argparse.ArgumentParser:
             help="opencode.db path",
         )
         p.add_argument("--json", action="store_true", help="machine-readable output")
+
+        p.add_argument("--request-log", help="explicit request JSONL, including its rotation files")
+        p.add_argument("--flight-log", help="explicit flight JSONL, including its rotation files")
+        p.add_argument("--pi-session", help="Pi session JSONL instead of the OpenCode database")
+        p.add_argument("--hermes-db", help="Hermes state.db instead of the OpenCode database")
+        p.add_argument("--hermes-log", help="Hermes agent.log for API tokens and completion times")
+        p.add_argument("--ar-tok-s", type=float, help="measured AR decode TPS for the same hardware, model and workload; never a default estimate")
 
     trace_sessions_p = trace_sub.add_parser(
         "sessions", help="List recent OpenCode sessions with server-request matches"
@@ -3353,7 +3469,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_reasoning_effort_arg(run_p)
     run_p.add_argument("--quiet", action="store_true", help="Hide the stats footer")
     run_p.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
-    run_p.add_argument("--expect-python", action="store_true")
+    run_p.add_argument(
+        "--expect-python", action="store_true",
+        help="Validate the final answer as Python, allowing one enclosing code fence",
+    )
     _add_fan_mode_args(
         run_p,
         max_help="Compatibility alias for --fan-mode max for this run",
@@ -3392,7 +3511,10 @@ def build_parser() -> argparse.ArgumentParser:
     chat_p.add_argument(
         "--json", action="store_true", help="Emit machine-readable JSON"
     )
-    chat_p.add_argument("--expect-python", action="store_true")
+    chat_p.add_argument(
+        "--expect-python", action="store_true",
+        help="Validate the final answer as Python, allowing one enclosing code fence",
+    )
     _add_fan_mode_args(
         chat_p,
         max_help="Compatibility alias for --fan-mode max for this run",
@@ -3505,6 +3627,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Committed-token batch size per chat SSE chunk.",
     )
     _add_batching_args(serve_p)
+    _add_ngram_prewarm_args(serve_p)
     _add_ssd_session_cache_args(serve_p)
     _add_paged_kv_quant_args(serve_p)
     _add_adaptive_args(serve_p)
@@ -3518,6 +3641,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--context-window",
         type=_positive_int,
         help="Override context window. Default reads the model/tokenizer config.",
+    )
+    serve_p.add_argument(
+        "--stream-stall-deadline-s",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Fail a stream whose model owner makes no progress for this many "
+            "seconds; 0 turns the watchdog off. Default: "
+            "$MTPLX_STREAM_STALL_DEADLINE_S or 300 (issue #448). The app "
+            "passes its Stall watchdog setting through this flag."
+        ),
+    )
+    serve_p.add_argument(
+        "--allow-swap",
+        action="store_true",
+        help=(
+            "Serve past this machine's memory fit: the default window is the "
+            "model's own maximum and prompts past the fit are admitted instead "
+            "of refused with 507. Expect swap and slow decode there. "
+            "MTPLX_ALLOW_SWAP=1 does the same for launchers without flags."
+        ),
     )
     serve_p.add_argument(
         "--default-temperature",
@@ -3736,7 +3881,7 @@ def build_parser() -> argparse.ArgumentParser:
             "reference",
             "reference-vllm",
         ],
-        help="Public benchmark action. Omit for legacy benchmark flags.",
+        help="Benchmark action; a bare `mtplx bench` lists them.",
     )
     bench_p.add_argument("--backend", default="manifest")
     bench_p.add_argument(
@@ -3851,7 +3996,10 @@ def build_parser() -> argparse.ArgumentParser:
     bench_p.add_argument("--model", default=default_model)
     bench_p.add_argument("--cache-dir")
     _add_model_search_dir_args(bench_p)
-    bench_p.add_argument("--prompts", default="mtplx/benchmarks/prompts/default.jsonl")
+    bench_p.add_argument(
+        "--prompts",
+        help="Prompt suite name or .jsonl path; defaults to the packaged default suite",
+    )
     bench_p.add_argument("--output")
     bench_p.add_argument("--out", dest="output", help="Alias for --output")
     bench_p.add_argument(
@@ -4404,6 +4552,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="hf-staging/Qwen3.6-27B-MTPLX-Optimized-Speed",
     )
     publish_check_p.add_argument("--repo-id")
+    publish_check_p.add_argument(
+        "--scrub",
+        action="store_true",
+        help="Rewrite staged JSON documents that carry local paths before upload",
+    )
     publish_check_p.set_defaults(func=cmd_model_public)
 
     config_p = sub.add_parser("config", help="Show or edit MTPLX user config")
@@ -4938,6 +5091,12 @@ def build_parser() -> argparse.ArgumentParser:
     adaptive_p.add_argument("--limit", type=int)
     adaptive_p.add_argument("--disable-thinking", action="store_true")
     adaptive_p.add_argument("--compare-ar", action="store_true")
+    adaptive_p.add_argument(
+        "--compare-static",
+        type=_comma_ints,
+        default=(),
+        help="Also run fixed-depth baselines on the same suite, e.g. 2,3",
+    )
     adaptive_p.add_argument("--mtp-hidden-variant", default="post_norm")
     adaptive_p.add_argument(
         "--mtp-cache-policy", choices=["persistent", "fresh"], default="persistent"
@@ -5089,8 +5248,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     from .config import apply_user_config
 
-    apply_user_config(args)
-    return int(args.func(args))
+    try:
+        apply_user_config(args)
+        return int(args.func(args))
+    except (KeyboardInterrupt, EOFError):
+        # Ctrl-C at a confirmation prompt, a poll loop, or a closed stdin is
+        # the user leaving, not a crash: every command's own `finally` (fan
+        # restore, download finalize) has already run by the time this is
+        # reached. End the line the cursor sits on so the shell prompt lands
+        # cleanly, and exit with the conventional 128 + SIGINT code.
+        print(file=sys.stderr)
+        return 130
 
 
 def main_tune(argv: list[str] | None = None) -> int:

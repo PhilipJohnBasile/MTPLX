@@ -75,6 +75,7 @@ def test_apply_metal_memory_caps_uses_top_level_mlx_apis(monkeypatch):
     assert result["memory_limit_bytes"] == 64 * GiB
     assert result["wired_limit_bytes"] == 48 * GiB
     assert result["memory_limit_api"] == "mx.set_memory_limit"
+    assert result["memory_limit_source"] == "env"
     assert result["wired_limit_api"] == "mx.set_wired_limit"
     assert calls == [("memory", 64 * GiB), ("wired", 48 * GiB)]
 
@@ -91,6 +92,7 @@ def test_apply_metal_memory_caps_caps_large_unified_memory_defaults(monkeypatch)
 
     assert result["applied"] is True
     assert result["memory_limit_bytes"] == 192 * GiB
+    assert result["memory_limit_source"] == "default"
     assert result["wired_limit_bytes"] == 160 * GiB
     assert calls == [("memory", 192 * GiB), ("wired", 160 * GiB)]
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import datetime as _dt
 import html
+import json
 import math
 import subprocess
 import sys
@@ -33,17 +34,16 @@ from typing import Any
 from .trace import (
     METRICS_DIR,
     _detect_pathologies,
-    _detect_port,
     _fmt_dur,
     _fmt_tok,
-    _join_session,
     _load_flight,
+    _load_joined,
     _load_receipts,
-    _opencode_connect,
     _opencode_parts,
-    _resolve_session_arg,
+    _source_port,
     _turn_row,
 )
+from .trace_metrics import mtp_economics, sample_intervals
 
 # dataviz reference palette, light mode (validated with validate_palette.js)
 _MUT, _AXIS, _SURF = "#898781", "#c3c2b7", "#fcfcfb"
@@ -139,6 +139,8 @@ def _row_dur(r: dict) -> float:
 
 
 def _share(r: dict) -> str:
+    if r["client_reasoning_tokens"] is None:
+        return ""
     think = r["client_reasoning_tokens"] or 0
     denom = r["completion_tokens"] or (think + (r["client_output_tokens"] or 0))
     return f"{think / denom * 100:.0f}% think" if denom else ""
@@ -268,14 +270,14 @@ def _accept_overlay(samples: list[dict]) -> tuple[list[tuple[float, float]], flo
 
 def _tps_cell(r: dict) -> str | None:
     sliding = [(lbl, float(v)) for lbl, v in r["sliding"] if v is not None]
-    samples = r["samples"]
+    samples = [s for s in r["samples"] if isinstance(s.get("tps"), (int, float))]
     if not samples and not sliding:
         return None
     w, px0, px1, py0, py1 = 252, 30, 240, 10, 86
     approx = not samples
     if samples:
         ts0 = float(samples[0].get("ts") or 0)
-        pts = [(float(s.get("ts") or 0) - ts0, float(s.get("tps") or 0)) for s in samples]
+        pts = [(float(s.get("ts") or 0) - ts0, float(s["tps"])) for s in samples]
         span = max(pts[-1][0], 1e-9)
     else:
         pts = [(float(i), v) for i, (_, v) in enumerate(sliding)]
@@ -292,7 +294,11 @@ def _tps_cell(r: dict) -> str | None:
         out.append(f'<line x1="{px0}" y1="{ty:.1f}" x2="{px1}" y2="{ty:.1f}" class="grid"/>'
                    f'<text x="{px0 - 4}" y="{ty + 3.5:.1f}" class="ax end">{tv:g}</text>')
     if pts:
-        path = " ".join(f"{'M' if i == 0 else 'L'}{spt(p, v)[0]:.1f},{spt(p, v)[1]:.1f}" for i, (p, v) in enumerate(pts))
+        path = " ".join(
+            f"{'M' if i == 0 or (not approx and p - pts[i-1][0] > 2.5) else 'L'}"
+            f"{spt(p, v)[0]:.1f},{spt(p, v)[1]:.1f}"
+            for i, (p, v) in enumerate(pts)
+        )
         dash = ' stroke-dasharray="5 4"' if approx else ""
         out.append(f'<path d="{path}" fill="none" stroke="{_BLUE}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"{dash}/>')
     if approx:
@@ -412,8 +418,7 @@ def _mtp_accept_panel(rows: list[dict]) -> str:
 
 
 def _mtp_time_panel(rows: list[dict]) -> str:
-    """100%-normalized stacked bar per turn splitting decode_elapsed_s into
-    draft / verify / accept / other, absolute seconds always visible."""
+    """Recorded timer shares per turn, with overlaps explicitly labelled."""
     x0, x1, rh = 44.0, 640.0, 26.0
     have, skipped = [], []
     for r in rows:
@@ -447,7 +452,8 @@ def _mtp_time_panel(rows: list[dict]) -> str:
                 body.append(f'<rect x="{cx:.1f}" y="{y}" width="{max(wseg - gap, 0.5):.1f}" height="12" fill="{col}"/>')
             cx += wseg
         ann = (f"draft {_fmt_dur(r['draft_time_s'])} · verify {_fmt_dur(r['verify_time_s'])}"
-               f" · accept {_fmt_dur(r['accept_time_s'])} · other {_fmt_dur(other)} of {_fmt_dur(total)}")
+               f" · accept {_fmt_dur(r['accept_time_s'])} · remainder {_fmt_dur(other)} · wall {_fmt_dur(total)}"
+               + (" (overlapping spans)" if d + v + a > total else ""))
         body.append(f'<text x="{x1 + 10:.1f}" y="{y + 10:.1f}" class="vlab">{_esc(ann)}</text>')
         tip_lines = [f"t{r['turn']} · decode {total:.2f}s"]
         tip_lines.extend(f"{nm} {sec:.2f}s ({sec / denom * 100:.1f}%)" for nm, sec, _c in segs)
@@ -456,10 +462,10 @@ def _mtp_time_panel(rows: list[dict]) -> str:
         tip = "\n".join(tip_lines)
         body.append(f'<rect x="0" y="{y - 3}" width="{_W}" height="{rh}" fill="transparent" data-tip="{_esc(tip)}" tabindex="0"/>')
     legend = _chips([(_BLUE, "draft"), (_ORANGE, "verify"), (_AQUA, "accept"), (_YELLOW, "other (unattributed decode)")])
-    note = _QUIET.format("each bar = that turn's decode_elapsed_s normalized to 100% · absolute seconds annotated per row")
+    note = _QUIET.format("recorded timer shares; when their sum exceeds wall time, spans overlap and the bar is normalized to that sum · absolute seconds and full wall time are shown")
     tail = _QUIET.format("omitted (receipt carries no draft/verify/accept timing): "
                          + ", ".join(skipped)) if skipped else ""
-    return ("<h3>Decode time split (draft / verify / accept / other)</h3>" + note + legend
+    return ("<h3>Recorded decode timers (draft / verify / accept / remainder)</h3>" + note + legend
             + f'<svg viewBox="0 0 {_W} {h}" role="img" aria-label="decode time split">'
             + _pct_grid(x0, x1, float(h)) + "".join(body) + "</svg>" + tail)
 
@@ -537,7 +543,7 @@ def _sec_digest(digest: list[dict]) -> str:
 def _user_snippet(conn: Any, message: dict) -> str | None:
     texts: list[str] = []
     try:
-        for part in _opencode_parts(conn, message.get("_id") or ""):
+        for part in (message["_parts"] if "_parts" in message else _opencode_parts(conn, message.get("_id") or "")):
             if part.get("type") == "text" and part.get("text"):
                 texts.append(str(part["text"]))
         if not texts:
@@ -554,11 +560,61 @@ def _user_snippet(conn: Any, message: dict) -> str | None:
 
 def _part_chars(conn: Any, message: dict) -> tuple[int | None, int | None]:
     try:
-        parts = _opencode_parts(conn, message.get("_id") or "")
+        parts = message["_parts"] if "_parts" in message else _opencode_parts(conn, message.get("_id") or "")
         return (sum(len(p.get("text") or "") for p in parts if p.get("type") == "reasoning"),
                 sum(len(p.get("text") or "") for p in parts if p.get("type") == "text"))
     except Exception:  # noqa: BLE001
         return None, None
+
+
+def _sec_inspector(joined: dict, conn: Any, ar_tok_s: float | None) -> str:
+    """One request selector and time scrubber over the original evidence."""
+    requests = []
+    for turn in joined["turns"]:
+        if turn["kind"] != "assistant":
+            continue
+        receipt = turn.get("receipt") or {}
+        message = turn["message"]
+        parts = (message["_parts"] if "_parts" in message
+                 else _opencode_parts(conn, message.get("_id") or ""))
+        requests.append({"turn": turn["turn"], "request_id": receipt.get("request_id"),
+                         "join": turn.get("join"), "receipt": receipt,
+                         "economics": mtp_economics(receipt, ar_tok_s),
+                         "intervals": sample_intervals(turn.get("flight", [])),
+                         "flight": turn.get("flight", []),
+                         "tools": [p for p in parts if p.get("type") == "tool"]})
+    evidence = {"session": joined["session"], "requests": requests,
+                "unmatched_receipts": joined.get("unmatched_receipts", [])}
+    payload = json.dumps(evidence, ensure_ascii=False).replace("<", "\\u003c")
+    options = ''.join(f'<option value="{i}">Step {r["turn"]} · {_esc(r["request_id"] or "unmatched")}</option>'
+                      for i, r in enumerate(requests))
+    return _card("Request inspector", (
+        '<p class="quiet">Choose an engine step, then scrub its recorded intervals. '
+        'Missing samples remain missing; a long gap is not fabricated zero throughput. '
+        'Verify/draft counters can overlap GPU work and must not be summed as exclusive wall time. '
+        'AR comparisons require a separately measured, matching baseline.</p>'
+        '<label>Engine step <select id="inspect-request">'+options+'</select></label> '
+        '<button id="inspect-export" type="button">Export evidence JSON</button>'
+        '<p id="inspect-summary"></p>'
+        '<label>Recorded interval <input id="inspect-time" type="range" min="0" value="0" step="1"></label>'
+        '<pre id="inspect-sample" style="white-space:pre-wrap"></pre>'
+        '<details><summary>Tool calls and their timing</summary><pre id="inspect-tools" style="white-space:pre-wrap"></pre></details>'
+        '<details><summary>Full engine receipt and MTP economics</summary><pre id="inspect-receipt" style="white-space:pre-wrap"></pre></details>'
+        f'<script type="application/json" id="inspect-data">{payload}</script>'
+        '<script>(()=>{const data=JSON.parse(document.getElementById("inspect-data").textContent);'
+        'const select=document.getElementById("inspect-request"),slider=document.getElementById("inspect-time");'
+        'const put=(id,v)=>document.getElementById(id).textContent=JSON.stringify(v,null,2);'
+        'function render(reset){const r=data.requests[Number(select.value)];if(!r)return;'
+        'slider.max=Math.max(0,r.intervals.length-1);slider.disabled=!r.intervals.length;if(reset)slider.value=0;'
+        'document.getElementById("inspect-summary").textContent="Join: "+r.join+" · "+r.intervals.length+" recorded intervals";'
+        'put("inspect-sample",r.intervals[Number(slider.value)]||{status:"No interval samples"});'
+        'put("inspect-tools",r.tools);put("inspect-receipt",{economics:r.economics,receipt:r.receipt});}'
+        'select.addEventListener("change",()=>render(true));slider.addEventListener("input",()=>render(false));'
+        'document.getElementById("inspect-export").onclick=()=>{const a=document.createElement("a");'
+        'const u=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));'
+        'a.href=u;a.download="mtplx-trace-evidence.json";a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);};'
+        'render(true);})();</script>'
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -622,21 +678,18 @@ _JS = (
 
 
 def cmd_trace_report(args: argparse.Namespace) -> int:
-    conn = _opencode_connect(Path(args.db))
-    if conn is None:
-        print(f"opencode db not found: {args.db}", file=sys.stderr)
-        return 1
-    session_id = _resolve_session_arg(conn, getattr(args, "session", None))
-    if not session_id:
-        print("no opencode sessions found", file=sys.stderr)
-        return 1
-    port = _detect_port(args.port)
+    port = _source_port(args)
     if port is None:
         print("no request logs found under ~/.mtplx/logs", file=sys.stderr)
         return 1
-    receipts = _load_receipts(port)
-    flight = _load_flight(port)
-    joined = _join_session(conn, session_id, receipts, flight)
+    receipts = _load_receipts(port, path=getattr(args, "request_log", None))
+    flight = _load_flight(port, path=getattr(args, "flight_log", None))
+    try:
+        conn, joined = _load_joined(args, receipts, flight)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    session_id = joined["session"]["id"]
     a_turns = [t for t in joined["turns"] if t["kind"] == "assistant"]
     rows = [_enrich(t) for t in a_turns]
     flags = _detect_pathologies(joined["turns"])
@@ -654,16 +707,18 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
         lo = min(starts)
         hi = max(r["start"] + _row_dur(r) for r in rows if r["start"])
         day = _dt.datetime.fromtimestamp(lo, tz=_dt.UTC).astimezone()
-        span = f"{day:%Y-%m-%d} {_hms(lo)} → {_hms(hi)}"
+        span = f"{day:%Y-%m-%d} {_hms(lo)} → {_hms(hi)} {day:%Z %z}"
     cards = [
         ("Turns", str(len(rows))),
         ("Warm cache reuse", f"{reuse * 100:.1f}%" if reuse is not None else "-"),
         ("Completion tokens", _fmt_tok(sum(r["completion_tokens"] or 0 for r in rows))),
-        ("Client think tokens", _fmt_tok(sum(r["client_reasoning_tokens"] or 0 for r in rows))),
-        ("Wall time (turns)", _fmt_dur(sum(r["wall_s"] or 0 for r in rows))),
+        ("Client think tokens", _fmt_tok(None if any(r["client_reasoning_tokens"] is None for r in rows)
+                                         else sum(r["client_reasoning_tokens"] for r in rows))),
+        ("Wall time (turns)", _fmt_dur(None if any(r["wall_s"] is None for r in rows)
+                                      else sum(r["wall_s"] for r in rows))),
         ("Mean decode", f"{mean_dec:.1f} tok/s" if mean_dec else "-"),
     ]
-    join_mode = "exact session_id" if joined["receipt_pool_scoped"] else "time+token fallback"
+    join_mode = joined["join_mode"]
     session = joined["session"]
     header = (f'<h1>mtplx trace report</h1><p class="meta"><b>{_esc(session_id)}</b>'
               f' · {_esc(session.get("title") or "untitled")}<br>{_esc(session.get("directory") or "-")}'
@@ -688,7 +743,8 @@ def cmd_trace_report(args: argparse.Namespace) -> int:
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>mtplx trace — {_esc(session_id)}</title><style>" + _CSS + "</style></head><body><main>"
             + header + pathology + _sec_timeline(rows) + _sec_cache(rows) + _sec_tps(rows)
-            + _sec_mtp(rows) + _sec_scatter(receipts, session_ids, port) + _sec_digest(digest)
+            + _sec_mtp(rows) + _sec_inspector(joined, conn, getattr(args, "ar_tok_s", None))
+            + _sec_scatter(receipts, session_ids, port) + _sec_digest(digest)
             + '</main><div id="tip"></div><script>' + _JS + "</script></body></html>")
 
     out_path = Path(args.out).expanduser() if args.out else METRICS_DIR / "reports" / f"{session_id}.html"

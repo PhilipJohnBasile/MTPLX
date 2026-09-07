@@ -2,7 +2,13 @@ import { useDashboardStore } from "../state/store";
 
 export function ReconnectBanner() {
   const connection = useDashboardStore((s) => s.connection);
-  if (connection === "open" || connection === "idle" || connection === "connecting") {
+  if (
+    connection === "open" ||
+    connection === "idle" ||
+    connection === "connecting" ||
+    // Sign-in has its own surface; this banner is for a server that is gone.
+    connection === "unauthorized"
+  ) {
     return null;
   }
   const message =

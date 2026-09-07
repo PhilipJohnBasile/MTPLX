@@ -146,10 +146,10 @@ private struct RuntimeMetadataRow: View {
 
     private var collapsibleHint: String {
         if let dict = value as? [String: Any] {
-            return "\(dict.count) field\(dict.count == 1 ? "" : "s")"
+            return dict.count == 1 ? tr("1 field") : tr("%lld fields", dict.count)
         }
         if let array = value as? [Any] {
-            return "\(array.count) item\(array.count == 1 ? "" : "s")"
+            return array.count == 1 ? tr("1 item") : tr("%lld items", array.count)
         }
         return ""
     }

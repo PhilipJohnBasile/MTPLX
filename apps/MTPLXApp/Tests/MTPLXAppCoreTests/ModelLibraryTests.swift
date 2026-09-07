@@ -2,6 +2,32 @@ import XCTest
 @testable import MTPLXAppCore
 
 final class ModelLibraryTests: XCTestCase {
+    func testMalformedLibrarySettingsPreserveValidRootsAndOtherSettings() throws {
+        let root = temporaryDirectory()
+        let settingsURL = root.appendingPathComponent("settings.json")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let first = root.appendingPathComponent("first").path
+        let second = root.appendingPathComponent("second").path
+        let data = try JSONSerialization.data(withJSONObject: [
+            "primary_model_directory": 42,
+            "additional_model_directories": [first, 42, second, first],
+            "port": 8765,
+            "onboarding_completed_at": 800_000_000,
+        ])
+        try data.write(to: settingsURL)
+
+        let result = MTPLXSettingsStore(settingsURL: settingsURL).loadWithRecovery()
+
+        XCTAssertNil(result.recovery)
+        XCTAssertEqual(result.configuration.primaryModelDirectory, ModelLibrary.default.primaryDirectory.path)
+        XCTAssertEqual(result.configuration.additionalModelDirectories, [first, second])
+        XCTAssertEqual(result.configuration.port, 8765)
+        XCTAssertNotNil(result.configuration.onboardingCompletedAt)
+        XCTAssertEqual(result.degradedFields.map(\.path).sorted(), [
+            "additional_model_directories[1]", "primary_model_directory",
+        ])
+    }
+
     func testLegacyConfigurationDecodesDefaultLibrary() throws {
         let config = try JSONDecoder().decode(
             MTPLXAppConfiguration.self,

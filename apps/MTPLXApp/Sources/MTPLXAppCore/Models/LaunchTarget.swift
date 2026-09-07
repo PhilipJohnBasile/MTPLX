@@ -26,13 +26,13 @@ public enum LaunchTarget: String, Codable, CaseIterable, Identifiable, Sendable 
 
     public var title: String {
         switch self {
-        case .chat: return "Chat"
-        case .openWebUI: return "Web UI"
-        case .pi: return "Pi"
-        case .openCode: return "OpenCode"
-        case .hermes: return "Hermes"
-        case .benchmark: return "Benchmark"
-        case .other: return "Other"
+        case .chat: return tr("Chat")
+        case .openWebUI: return tr("Web UI")
+        case .pi: return tr("Pi")
+        case .openCode: return tr("OpenCode")
+        case .hermes: return tr("Hermes")
+        case .benchmark: return tr("Benchmark")
+        case .other: return tr("Other")
         }
     }
 
@@ -40,19 +40,19 @@ public enum LaunchTarget: String, Codable, CaseIterable, Identifiable, Sendable 
     public var tagline: String {
         switch self {
         case .chat:
-            return "Chat right here with web search and file uploads."
+            return tr("Chat right here with web search and file uploads.")
         case .openWebUI:
-            return "Chat in your browser."
+            return tr("Chat in your browser.")
         case .pi:
-            return "Use Pi in the terminal."
+            return tr("Use Pi in the terminal.")
         case .openCode:
-            return "Use OpenCode Desktop, powered by MTPLX."
+            return tr("Use OpenCode Desktop, powered by MTPLX.")
         case .hermes:
-            return "Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools."
+            return tr("Use Hermes Desktop, powered by MTPLX — terminal, file, web, browser, and messaging tools.")
         case .benchmark:
-            return "Run AIME 2026."
+            return tr("Run AIME 2026.")
         case .other:
-            return "Connect Cursor, Codex, Claude Code, or any compatible app."
+            return tr("Connect Cursor, Codex, Claude Code, or any compatible app.")
         }
     }
 

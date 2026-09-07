@@ -68,14 +68,14 @@ struct DaemonStatePill: View {
 
     private var helpText: String {
         switch state {
-        case .stopped: "MTPLX is not running."
-        case .starting: "Spawning the hidden mtplx serve process."
-        case .warming: "MTPLX is up, checking health."
-        case .running: "MTPLX healthy."
-        case .degraded(let msg): "Degraded: \(msg)"
-        case .stopping: "Shutting down."
-        case .crashed(let status?): "Crashed with status \(status)."
-        case .crashed: "Crashed."
+        case .stopped: tr("MTPLX is not running.")
+        case .starting: tr("Spawning the hidden mtplx serve process.")
+        case .warming: tr("MTPLX is up, checking health.")
+        case .running: tr("MTPLX healthy.")
+        case .degraded(let msg): tr("Degraded: %@", msg)
+        case .stopping: tr("Shutting down.")
+        case .crashed(let status?): tr("Crashed with status %@.", String(status))
+        case .crashed: tr("Crashed.")
         }
     }
 }
@@ -170,54 +170,54 @@ struct ConnectionDot: View {
     }
 
     private var label: String {
-        if isHealthy { return "Running" }
+        if isHealthy { return tr("Running") }
         // The degraded reason was invisible outside a hover tooltip; users
         // (and their screenshots) only ever saw the bare word "Degraded".
         // Surface a capped reason inline; the full text stays in helpText.
         if case .degraded(let reason) = daemonState {
             let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { return "Degraded" }
+            if trimmed.isEmpty { return tr("Degraded") }
             let capped = trimmed.count > 44
                 ? String(trimmed.prefix(44)).trimmingCharacters(in: .whitespaces) + "…"
                 : trimmed
-            return "Degraded — \(capped)"
+            return tr("Degraded — %@", capped)
         }
         switch daemonState.kind {
         case .running:
             switch connectionState {
-            case .open: return "Running"
-            case .connecting: return "Connecting…"
-            case .reconnecting(let n): return "Reconnect #\(n)"
-            case .failed: return "Offline"
-            case .idle: return "Idle"
+            case .open: return tr("Running")
+            case .connecting: return tr("Connecting…")
+            case .reconnecting(let n): return tr("Reconnect #%lld", n)
+            case .failed: return tr("Offline")
+            case .idle: return tr("Idle")
             }
-        case .starting: return "Starting"
-        case .warming: return "Warming"
-        case .stopping: return "Stopping"
-        case .degraded: return "Degraded"
-        case .crashed: return "Crashed"
-        case .stopped: return "Stopped"
+        case .starting: return tr("Starting")
+        case .warming: return tr("Warming")
+        case .stopping: return tr("Stopping")
+        case .degraded: return tr("Degraded")
+        case .crashed: return tr("Crashed")
+        case .stopped: return tr("Stopped")
         }
     }
 
     private var helpText: String {
-        if isHealthy { return "Running and ready." }
+        if isHealthy { return tr("Running and ready.") }
         switch daemonState {
         case .running:
             switch connectionState {
-            case .open: return "Running."
-            case .connecting: return "Connecting to live stats…"
-            case .reconnecting(let n): return "Reconnecting (attempt \(n))."
-            case .failed(let msg): return "Live stats offline: \(msg)"
-            case .idle: return "Running. Waiting for stats."
+            case .open: return tr("Running.")
+            case .connecting: return tr("Connecting to live stats…")
+            case .reconnecting(let n): return tr("Reconnecting (attempt %lld).", n)
+            case .failed(let msg): return tr("Live stats offline: %@", msg)
+            case .idle: return tr("Running. Waiting for stats.")
             }
-        case .starting: return "Starting up…"
-        case .warming: return "Loading the model…"
-        case .degraded(let msg): return "Degraded: \(msg)"
-        case .stopping: return "Stopping…"
-        case .crashed(let status?): return "Crashed (exit code \(status))."
-        case .crashed: return "Crashed."
-        case .stopped: return "Not running."
+        case .starting: return tr("Starting up…")
+        case .warming: return tr("Loading the model…")
+        case .degraded(let msg): return tr("Degraded: %@", msg)
+        case .stopping: return tr("Stopping…")
+        case .crashed(let status?): return tr("Crashed (exit code %@).", String(status))
+        case .crashed: return tr("Crashed.")
+        case .stopped: return tr("Not running.")
         }
     }
 }
@@ -255,7 +255,7 @@ struct ProfilePill: View {
                         .strokeBorder(Color.mtplxSeparator, lineWidth: 0.5)
                 )
         )
-        .help(model ?? "Active profile")
+        .help(model ?? tr("Active profile"))
     }
 }
 
@@ -281,7 +281,7 @@ struct PerformanceLockToggle: View {
                 Image(systemName: active ? "lock.fill" : "lock.open")
                     .symbolRenderingMode(.hierarchical)
                     .font(.system(size: 11, weight: .medium))
-                Text(active ? "Locked" : "Lock")
+                Text(active ? tr("Locked") : tr("Lock"))
                     .font(.system(size: 11, weight: .heavy, design: .monospaced))
                     .tracking(1)
                 if isUpdating {
@@ -308,7 +308,7 @@ struct PerformanceLockToggle: View {
         .help(
             active
                 ? "Performance Lock is on: 1 Hz polling, animations paused."
-                : "Performance Lock pauses animations and drops polling to 1 Hz so the dashboard never steals GPU from the model."
+                : tr("Performance Lock pauses animations and drops polling to 1 Hz so the dashboard never steals GPU from the model.")
         )
     }
 
@@ -350,7 +350,7 @@ struct DaemonControls: View {
                 systemImage: "arrow.clockwise",
                 tint: Brand.accent,
                 enabled: canStop,
-                help: "Restart MTPLX with the last target."
+                help: tr("Restart MTPLX with the last target.")
             ) {
                 Task {
                     await stopCoordinator.stopAll(reason: "top_chrome_restart")
@@ -422,10 +422,10 @@ struct ThermalRuleBanner: View {
     private var bannerContent: some View {
         let title = thermalPollingEnabled
             ? "Fans haven't ramped to verified max"
-            : "Thermal polling is off"
+            : tr("Thermal polling is off")
         let message = thermalPollingEnabled
             ? "RULES.md requires verified max-fan mode for any real model probe. Headline numbers measured now are diagnostic-only."
-            : "Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only."
+            : tr("Enable thermal polling in Settings to verify fan ramp before benchmarking. Headline numbers without verified fans are diagnostic-only.")
 
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "thermometer.high")
@@ -523,30 +523,30 @@ struct MemoryGuardBanner: View {
     private var unknownSource: Bool { pressureSource == "unknown" }
 
     private func title(critical: Bool) -> String {
-        if critical { return "Critical memory pressure" }
-        if recentShed { return "Memory pressure — engine shedding caches" }
-        return externalSource ? "System memory pressure" : "Memory running high"
+        if critical { return tr("Critical memory pressure") }
+        if recentShed { return tr("Memory pressure — engine shedding caches") }
+        return externalSource ? tr("System memory pressure") : tr("Memory running high")
     }
 
     private func message(critical: Bool) -> String {
         var text: String
         if critical {
-            text = "The engine emptied its caches to avoid swapping. Speed is protected, but warm turns will restore from SSD."
+            text = tr("The engine emptied its caches to avoid swapping. Speed is protected, but warm turns will restore from SSD.")
         } else if recentShed {
-            text = "Warm sessions are being demoted to SSD ahead of any swap. Turns may restore from disk (seconds) instead of RAM."
+            text = tr("Warm sessions are being demoted to SSD ahead of any swap. Turns may restore from disk (seconds) instead of RAM.")
         } else if externalSource {
-            text = "Another process is pushing this Mac into memory pressure. Decode can dip while the spike lasts; the engine's own footprint is steady and nothing has been evicted."
+            text = tr("Another process is pushing this Mac into memory pressure. Decode can dip while the spike lasts; the engine's own footprint is steady and nothing has been evicted.")
         } else if unknownSource {
-            text = "This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here."
+            text = tr("This Mac is under memory pressure. Nothing has been evicted; caches yield to SSD before any swap if it stays here.")
         } else {
-            text = "The allocator briefly ran near its ceiling (a prefill spike does this). Nothing has been evicted; caches yield to SSD before any swap if it stays here."
+            text = tr("The allocator briefly ran near its ceiling (a prefill spike does this). Nothing has been evicted; caches yield to SSD before any swap if it stays here.")
         }
         if let plan,
            plan.contextOvercommitted == true,
            let resolved = plan.contextWindowResolved,
            let fit = plan.contextWindowFit
         {
-            text += " Context window \(resolved.formatted()) exceeds this Mac's fit of \(fit.formatted()) tokens. Lower it to stop this recurring."
+            text += tr(" Context window %@ exceeds this Mac's fit of %@ tokens. Lower it to stop this recurring.", resolved.formatted(), fit.formatted())
         }
         return text
     }
@@ -583,8 +583,8 @@ struct ConnectionIssueBanner: View {
 
     private var message: String? {
         switch state {
-        case .reconnecting(let n): "Stream reconnecting (attempt #\(n))…"
-        case .failed(let m): "Stream offline: \(m)"
+        case .reconnecting(let n): tr("Stream reconnecting (attempt #%lld)…", n)
+        case .failed(let m): tr("Stream offline: %@", m)
         default: nil
         }
     }

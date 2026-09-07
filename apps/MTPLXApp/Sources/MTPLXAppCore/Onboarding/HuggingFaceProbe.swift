@@ -49,7 +49,7 @@ public struct HuggingFaceProbe: Sendable {
             return OtherModelProbe(
                 verdict: .probeFailed,
                 hfRepo: rawRepo.trimmingCharacters(in: .whitespacesAndNewlines),
-                message: "Paste a Hugging Face repo or link.",
+                message: tr("Paste a Hugging Face repo or link."),
                 diagnostic: "invalid_repo_id"
             )
         }
@@ -67,7 +67,7 @@ public struct HuggingFaceProbe: Sendable {
             return OtherModelProbe(
                 verdict: .noMTP,
                 hfRepo: repo,
-                message: "MTP unavailable — runs autoregressive (no speculative speed boost, ~2-3× slower than an MTP build)."
+                message: tr("MTP unavailable — runs autoregressive (no speculative speed boost, ~2-3× slower than an MTP build).")
             )
         }
 
@@ -76,13 +76,13 @@ public struct HuggingFaceProbe: Sendable {
             return OtherModelProbe(
                 verdict: .ready,
                 hfRepo: repo,
-                message: "MTP heads detected. Ready to download."
+                message: tr("MTP heads detected. Ready to download.")
             )
         }
         return OtherModelProbe(
             verdict: .missingSidecar,
             hfRepo: repo,
-            message: "Model declares MTP but mtp.safetensors isn't published. Speed will drop to standard decoding."
+            message: tr("Model declares MTP but mtp.safetensors isn't published. Speed will drop to standard decoding.")
         )
     }
 
@@ -118,7 +118,7 @@ public struct HuggingFaceProbe: Sendable {
                 hfRepo: rawRepo.trimmingCharacters(in: .whitespacesAndNewlines),
                 sourceFormat: .unknown,
                 hasMtpWeights: false,
-                message: "Paste a Hugging Face repo or link.",
+                message: tr("Paste a Hugging Face repo or link."),
                 diagnostic: "invalid_repo_id"
             )
         }
@@ -136,7 +136,7 @@ public struct HuggingFaceProbe: Sendable {
                 hfRepo: repo,
                 sourceFormat: format,
                 hasMtpWeights: true,
-                message: "Already MTPLX-branded — depth \(depth) verified. Install instead of rebuilding.",
+                message: tr("Already MTPLX-branded — depth %lld verified. Install instead of rebuilding.", depth),
                 diagnostic: nil
             )
         }
@@ -157,7 +157,7 @@ public struct HuggingFaceProbe: Sendable {
                     hfRepo: repo,
                     sourceFormat: .unknown,
                     hasMtpWeights: false,
-                    message: "Official MTPLX pair bundle (target + draft). Install it instead of rebuilding.",
+                    message: tr("Official MTPLX pair bundle (target + draft). Install it instead of rebuilding."),
                     diagnostic: nil
                 )
             }
@@ -180,7 +180,7 @@ public struct HuggingFaceProbe: Sendable {
                 hfRepo: repo,
                 sourceFormat: Self.classifySourceFormat(config: config, hasMTP: false),
                 hasMtpWeights: false,
-                message: "Architecture has no MTP heads. Forge cannot synthesize them — pick a model with `mtp_num_hidden_layers > 0` in config.json."
+                message: tr("Architecture has no MTP heads. Forge cannot synthesize them — pick a model with `mtp_num_hidden_layers > 0` in config.json.")
             )
         }
 
@@ -264,17 +264,17 @@ public struct HuggingFaceProbe: Sendable {
     private static func forgeableMessage(format: ForgeSourceFormat, hasSidecar: Bool) -> String {
         switch format {
         case .compressedTensorsAwq:
-            return "AWQ source detected (vLLM/SGLang format). Forge will convert the body to MLX-affine and extract the MTP sidecar."
+            return tr("AWQ source detected (vLLM/SGLang format). Forge will convert the body to MLX-affine and extract the MTP sidecar.")
         case .mlxAffineWithMtp:
-            return "MLX-affine artifact with packed MTP sidecar. Forge will requantize the body and re-pack."
+            return tr("MLX-affine artifact with packed MTP sidecar. Forge will requantize the body and re-pack.")
         case .mlxAffine:
-            return "MLX-affine source. Forge will package the MTP sidecar from " + (hasSidecar ? "mtp.safetensors." : "the main shards.")
+            return hasSidecar ? tr("MLX-affine source. Forge will package the MTP sidecar from mtp.safetensors.") : tr("MLX-affine source. Forge will package the MTP sidecar from the main shards.")
         case .bf16Native:
-            return "BF16 source with MTP heads. Forge will quantize the body and keep MTP weights at BF16 (safest)."
+            return tr("BF16 source with MTP heads. Forge will quantize the body and keep MTP weights at BF16 (safest).")
         case .hfVllm:
-            return "Hugging Face source. Forge will convert to MLX and pack the MTP sidecar."
+            return tr("Hugging Face source. Forge will convert to MLX and pack the MTP sidecar.")
         case .unknown:
-            return "Source detected but format is unfamiliar. Forge will attempt a BF16-native recipe; review the Plan step carefully."
+            return tr("Source detected but format is unfamiliar. Forge will attempt a BF16-native recipe; review the Plan step carefully.")
         }
     }
 
@@ -298,7 +298,7 @@ public struct HuggingFaceProbe: Sendable {
             return .failed(OtherModelProbe(
                 verdict: .probeFailed,
                 hfRepo: repo,
-                message: "Could not build URL for config.json.",
+                message: tr("Could not build URL for config.json."),
                 diagnostic: "url_build_failed"
             ))
         }
@@ -311,7 +311,7 @@ public struct HuggingFaceProbe: Sendable {
                 return .failed(OtherModelProbe(
                     verdict: .probeFailed,
                     hfRepo: repo,
-                    message: "This repo is private or gated. Public Hugging Face models download without a login.",
+                    message: tr("This repo is private or gated. Public Hugging Face models download without a login."),
                     diagnostic: "http_\(status)"
                 ))
             case 404:
@@ -329,7 +329,7 @@ public struct HuggingFaceProbe: Sendable {
                 return .failed(OtherModelProbe(
                     verdict: .probeFailed,
                     hfRepo: repo,
-                    message: "config.json is unavailable (HTTP \(status)).",
+                    message: tr("config.json is unavailable (HTTP %@).", String(status)),
                     diagnostic: "http_\(status)"
                 ))
             }
@@ -340,7 +340,7 @@ public struct HuggingFaceProbe: Sendable {
                 return .failed(OtherModelProbe(
                     verdict: .probeFailed,
                     hfRepo: repo,
-                    message: "config.json was malformed.",
+                    message: tr("config.json was malformed."),
                     diagnostic: "config_decode_failed"
                 ))
             }
@@ -352,7 +352,7 @@ public struct HuggingFaceProbe: Sendable {
             return .failed(OtherModelProbe(
                 verdict: .probeFailed,
                 hfRepo: repo,
-                message: "Couldn't fetch config.json.",
+                message: tr("Couldn't fetch config.json."),
                 diagnostic: error.localizedDescription
             ))
         }
@@ -410,7 +410,7 @@ public struct HuggingFaceProbe: Sendable {
         let fallback = OtherModelProbe(
             verdict: .probeFailed,
             hfRepo: repo,
-            message: "Repository or config.json not found on Hugging Face.",
+            message: tr("Repository or config.json not found on Hugging Face."),
             diagnostic: "http_404"
         )
         guard let url = URL(string: "\(endpointBase)/api/models/\(repo)") else {
@@ -429,14 +429,14 @@ public struct HuggingFaceProbe: Sendable {
             return OtherModelProbe(
                 verdict: .probeFailed,
                 hfRepo: repo,
-                message: "This repo doesn't exist on Hugging Face, or it's private or gated. Check the name; public models download without a login.",
+                message: tr("This repo doesn't exist on Hugging Face, or it's private or gated. Check the name; public models download without a login."),
                 diagnostic: "repo_not_found_or_gated"
             )
         case 404:
             return OtherModelProbe(
                 verdict: .probeFailed,
                 hfRepo: repo,
-                message: "This repo doesn't exist on Hugging Face. Check the name and try again.",
+                message: tr("This repo doesn't exist on Hugging Face. Check the name and try again."),
                 diagnostic: "repo_not_found"
             )
         default:
@@ -470,19 +470,19 @@ public struct HuggingFaceProbe: Sendable {
                 cardData: metadata["cardData"] as? [String: Any]
             )
             let pointer = source.map {
-                "This one was made from \($0). Paste that repo instead and Forge can convert it."
-            } ?? "Paste the original repo it was made from instead and Forge can convert it."
+                tr("This one was made from %@. Paste that repo instead and Forge can convert it.", $0)
+            } ?? tr("Paste the original repo it was made from instead and Forge can convert it.")
             return OtherModelProbe(
                 verdict: .probeFailed,
                 hfRepo: repo,
-                message: "GGUF repos aren't supported: GGUF is llama.cpp's format and MTPLX runs MLX models. \(pointer)",
+                message: tr("GGUF repos aren't supported: GGUF is llama.cpp's format and MTPLX runs MLX models. %@", pointer),
                 diagnostic: "gguf_repo"
             )
         }
         return OtherModelProbe(
             verdict: .probeFailed,
             hfRepo: repo,
-            message: "This repo exists but has no config.json, so MTPLX can't read it. If it's a converted export, paste the original repo instead.",
+            message: tr("This repo exists but has no config.json, so MTPLX can't read it. If it's a converted export, paste the original repo instead."),
             diagnostic: "config_missing"
         )
     }
@@ -506,12 +506,12 @@ public struct HuggingFaceProbe: Sendable {
             ?? (textConfig["architectures"] as? [String])?.first
         let modelType = (textConfig["model_type"] as? String)
             ?? (targetConfig["model_type"] as? String)
-        let described = (architecture ?? modelType).map { " (\($0) target + draft)" }
-            ?? " (target + draft)"
+        let described = (architecture ?? modelType).map { tr(" (%@ target + draft)", $0) }
+            ?? tr(" (target + draft)")
         return OtherModelProbe(
             verdict: .ready,
             hfRepo: repo,
-            message: "MTPLX pair bundle detected\(described). Ready to download."
+            message: tr("MTPLX pair bundle detected%@. Ready to download.", described)
         )
     }
 

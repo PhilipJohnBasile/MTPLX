@@ -46,7 +46,16 @@ struct ChatComposerView: View {
                     maxHeight: maxHeight,
                     onSubmit: handleSubmit,
                     onFileDrop: { urls in
-                        Task { await viewModel.attach(urls) }
+                        Task { await viewModel.attach(urls, visionEnabled: visionEnabled) }
+                    },
+                    onImagePaste: { png in
+                        Task {
+                            await viewModel.attachPastedImage(
+                                png,
+                                filename: ComposerPasteClassifier.pastedImageFilename(),
+                                visionEnabled: visionEnabled
+                            )
+                        }
                     }
                 )
                 .frame(height: measuredHeight)
@@ -77,21 +86,53 @@ struct ChatComposerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(viewModel.pendingAttachments, id: \.id) { attachment in
+                    let presentation = Self.cardPresentation(
+                        for: attachment,
+                        state: viewModel.extractionState(for: attachment)
+                    )
                     AttachmentCard(
                         filename: attachment.filename,
                         fileExtension: extensionOf(attachment.filename),
                         sizeBytes: attachment.sizeBytes,
                         imageData: attachment.imageData,
-                        errorMessage:
-                            (attachment.imageData == nil
-                                && attachment.extractedText.isEmpty)
-                            ? "Could not read" : nil,
+                        errorMessage: presentation.errorMessage,
+                        statusMessage: presentation.statusMessage,
+                        isExtracting: presentation.isExtracting,
                         onRemove: { viewModel.removeAttachment(attachment) }
                     )
                 }
             }
             .padding(.horizontal, 2)
             .padding(.vertical, 2)
+        }
+    }
+
+    /// What the card says about a pending attachment: extracting,
+    /// failed (with the reason), truncated (with what was kept), or
+    /// unreadable when extraction produced nothing to send.
+    struct AttachmentCardPresentation: Equatable {
+        var errorMessage: String?
+        var statusMessage: String?
+        var isExtracting = false
+    }
+
+    static func cardPresentation(
+        for attachment: ChatAttachment,
+        state: ChatViewModel.AttachmentExtractionState?
+    ) -> AttachmentCardPresentation {
+        switch state {
+        case .extracting:
+            return AttachmentCardPresentation(statusMessage: tr("Extracting…"), isExtracting: true)
+        case .failed(let message):
+            return AttachmentCardPresentation(errorMessage: message)
+        case .ready(let truncation):
+            if attachment.imageData == nil && attachment.extractedText.isEmpty {
+                return AttachmentCardPresentation(errorMessage: tr("Could not read"))
+            }
+            return AttachmentCardPresentation(statusMessage: truncation?.summary)
+        case nil:
+            let unreadable = attachment.imageData == nil && attachment.extractedText.isEmpty
+            return AttachmentCardPresentation(errorMessage: unreadable ? tr("Could not read") : nil)
         }
     }
 
@@ -105,13 +146,13 @@ struct ChatComposerView: View {
                 .frame(width: 32, height: 32)
                 .background(
                     Circle()
-                        .fill(Color.white.opacity(0.04))
+                        .fill(Brand.wash.opacity(0.04))
                         .overlay(Circle().stroke(Brand.separator, lineWidth: 0.5))
                 )
         }
         .buttonStyle(.plain)
-        .help("Attach a file (PDF, docx, md, txt)")
-        .accessibilityLabel("Attach file")
+        .help(tr("Attach a file (PDF, docx, md, txt)"))
+        .accessibilityLabel(tr("Attach file"))
     }
 
     private var webSearchToggle: some View {
@@ -122,7 +163,7 @@ struct ChatComposerView: View {
             HStack(spacing: 6) {
                 Image(systemName: "globe")
                     .font(.system(size: 12, weight: .semibold))
-                Text("Web")
+                Text(tr("Web"))
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .tracking(0.2)
             }
@@ -134,7 +175,7 @@ struct ChatComposerView: View {
                     .fill(
                         isOn
                             ? Brand.accentChrome.opacity(0.12)
-                            : Color.white.opacity(0.04)
+                            : Brand.wash.opacity(0.04)
                     )
                     .overlay(
                         Capsule(style: .continuous)
@@ -146,8 +187,8 @@ struct ChatComposerView: View {
             )
         }
         .buttonStyle(.plain)
-        .help(isOn ? "Web search is on for this conversation" : "Enable web search for this conversation")
-        .accessibilityLabel("Web search")
+        .help(isOn ? tr("Web search is on for this conversation") : tr("Enable web search for this conversation"))
+        .accessibilityLabel(tr("Web search"))
         .accessibilityValue(isOn ? "on" : "off")
     }
 
@@ -165,7 +206,7 @@ struct ChatComposerView: View {
                     .opacity(canSend || viewModel.isStreaming ? 1.0 : 0.4)
                 Image(systemName: viewModel.isStreaming ? "stop.fill" : "arrow.up")
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Brand.onAccent)
                     .symbolRenderingMode(.monochrome)
                     .contentTransition(.symbolEffect(.replace))
             }
@@ -175,14 +216,23 @@ struct ChatComposerView: View {
         .buttonStyle(.plain)
         .disabled(!viewModel.isStreaming && !canSend)
         .onHover { sendButtonHovering = $0 }
-        .help(viewModel.isStreaming ? "Stop generating" : "Send")
-        .accessibilityLabel(viewModel.isStreaming ? "Stop generating" : "Send message")
+        .help(sendButtonHelp)
+        .accessibilityLabel(viewModel.isStreaming ? tr("Stop generating") : tr("Send message"))
         .animation(.smooth(duration: 0.18), value: viewModel.isStreaming)
         .animation(.smooth(duration: 0.18), value: sendButtonHovering)
     }
 
+    private var sendButtonHelp: String {
+        if viewModel.isStreaming { return tr("Stop generating") }
+        if viewModel.isExtractingAttachments { return tr("Extracting attachments…") }
+        return tr("Send")
+    }
+
     private var canSend: Bool {
         engineCanAcceptMessages
+            // Send waits for the strip to settle so a file still being
+            // read is never left behind for the next message.
+            && !viewModel.isExtractingAttachments
             && (
                 !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || viewModel.hasSendablePendingAttachments
@@ -196,13 +246,13 @@ struct ChatComposerView: View {
     private var engineStatusText: String? {
         switch daemonState.kind {
         case .starting, .warming:
-            return "Loading \(selectedModelName)…"
+            return tr("Loading %@…", selectedModelName)
         case .stopping:
-            return "Stopping MTPLX…"
+            return tr("Stopping MTPLX…")
         case .stopped:
-            return "Start MTPLX to send."
+            return tr("Start MTPLX to send.")
         case .degraded, .crashed:
-            return "Restart MTPLX to send."
+            return tr("Restart MTPLX to send.")
         case .running:
             return nil
         }
@@ -235,13 +285,13 @@ struct ChatComposerView: View {
         panel.allowedContentTypes = Self.allowedContentTypes(
             includeImages: visionEnabled
         )
-        panel.prompt = "Attach"
+        panel.prompt = tr("Attach")
         panel.message = visionEnabled
             ? "Attach documents (PDF, docx, md, txt) or images (PNG, JPEG, WebP)."
-            : "Attach files (PDF, docx, md, txt) to include their text in your message."
+            : tr("Attach files (PDF, docx, md, txt) to include their text in your message.")
         if panel.runModal() == .OK {
             let urls = panel.urls
-            Task { await viewModel.attach(urls) }
+            Task { await viewModel.attach(urls, visionEnabled: visionEnabled) }
         }
     }
 

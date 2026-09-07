@@ -7,7 +7,10 @@ export function BottomStatsBar() {
   const liveTokS = useDashboardStore((s) => s.liveTokS);
   const completionTokens = latest?.completion_tokens ?? null;
   const ttftS = latest?.ttft_s ?? null;
-  const decodeTokS = liveTokS ?? latest?.decode_tok_s ?? null;
+  // Every other figure in this bar describes the last completed request, so
+  // tok/s does too once decoding stops; the highlight marks a live reading.
+  const isLive = typeof liveTokS === "number";
+  const decodeTokS = isLive ? liveTokS : (latest?.decode_tok_s ?? null);
   const requestTokS = latest?.request_tok_s ?? null;
   const promptEvalS = latest?.prompt_eval_time_s ?? null;
   const decodeElapsedS = latest?.decode_elapsed_s ?? null;
@@ -20,9 +23,9 @@ export function BottomStatsBar() {
         <Item label="prompt eval" value={fmtSeconds(promptEvalS)} />
         <Item label="decode" value={fmtSeconds(decodeElapsedS)} />
         <Item
-          label="tok/s"
+          label={isLive ? "tok/s live" : "tok/s"}
           value={fmtTokS(decodeTokS)}
-          highlight={typeof decodeTokS === "number" && decodeTokS >= 40}
+          highlight={isLive}
         />
         <Item label="req tok/s" value={fmtTokS(requestTokS)} />
         <Item label="lifetime req" value={fmtNumber(totalRequests)} />

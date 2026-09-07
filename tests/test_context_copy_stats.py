@@ -123,6 +123,15 @@ def _clean_env(monkeypatch) -> None:
         "MTPLX_CONTEXT_COPY_NGMAX",
         "MTPLX_CONTEXT_COPY_MINEXT",
         "MTPLX_SKIP_VERIFY_SNAPSHOT",
+        # Same reason MTPLX_SKIP_VERIFY_SNAPSHOT is here: both are turbo/
+        # sustained profile env (profiles.py), and apply_profile_env writes
+        # os.environ for real, so any earlier test in the process that ran a
+        # CLI lane through a profile leaves them set. These tests read
+        # stats.events, and generation.py gates event recording on
+        # MTPLX_DROP_EVENTS, so a leaked "1" silently empties every block
+        # assertion here (order-dependent failure, e.g. after
+        # tests/test_public_cli.py).
+        "MTPLX_DROP_EVENTS",
     ):
         monkeypatch.delenv(name, raising=False)
 

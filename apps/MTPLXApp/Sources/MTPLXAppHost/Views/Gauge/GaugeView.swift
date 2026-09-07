@@ -123,6 +123,10 @@ struct GaugeView: View {
                 .animation(nil, value: mode)
         }
         .frame(width: diameter, height: diameter)
+        // The dial is an instrument: the arc, ticks and sticky-max dot
+        // are placed by angle, and speed always grows clockwise, so the
+        // ring keeps its LTR geometry even when the app runs RTL.
+        .environment(\.layoutDirection, .leftToRight)
         .padding(8)
         .contentShape(Circle())
         .onHover { hovering in
@@ -197,7 +201,7 @@ struct GaugeView: View {
             pendingSpeedTask = nil
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(mode.isDim ? "Start MTPLX" : "MTPLX hero gauge")
+        .accessibilityLabel(mode.isDim ? tr("Start MTPLX") : tr("MTPLX hero gauge"))
         .accessibilityValue(accessibilityValue)
         .accessibilityAddTraits(mode.isDim && onPowerTap != nil ? .isButton : [])
     }
@@ -227,14 +231,14 @@ struct GaugeView: View {
 
     private var arcStrokeColor: Color {
         if mode.isDegraded { return Brand.danger }
-        if mode.isDim     { return Color.white.opacity(0.14) }
+        if mode.isDim     { return Brand.wash.opacity(0.14) }
         // Track stays a quiet dim grey so the bright white fill arc
         // has unambiguous contrast against it. Previously the track
         // was `Brand.typeBody` (off-white) which was visually
         // indistinguishable from the fill `Brand.typeHi` (also
         // off-white) — the gauge looked like a single white arc with
         // no obvious fill level.
-        return Color.white.opacity(0.10)
+        return Brand.wash.opacity(0.10)
     }
 
     private func arcShape(lineWidth: CGFloat) -> some View {
@@ -372,7 +376,7 @@ struct GaugeView: View {
             .frame(width: heroNumberWidth, alignment: .center)
             .contentTransition(.numericText())
             .shadow(
-                color: chromeHaloActive ? Color.white.opacity(0.06) : .clear,
+                color: chromeHaloActive ? Brand.chromeHalo : .clear,
                 radius: chromeHaloActive ? 8 : 0
             )
             .phaseAnimator(
@@ -558,7 +562,7 @@ struct GaugeView: View {
 
     private var centerForeground: AnyShapeStyle {
         if mode.isDegraded { return AnyShapeStyle(Brand.danger) }
-        if mode.isDim      { return AnyShapeStyle(Color.white.opacity(0.30)) }
+        if mode.isDim      { return AnyShapeStyle(Brand.wash.opacity(0.30)) }
         // Polished chrome gradient on the hero TPS digits so they read
         // as the same polished steel as the wordmark + ALL-TIME MAX
         // badge. The neighbouring shadow halo (see `chromeHaloActive`)
@@ -640,15 +644,15 @@ struct GaugeView: View {
     private var accessibilityValue: String {
         switch mode {
         case let .tps(decode, _):
-            return "\(Format.tps(decode)) TPS decoding"
+            return tr("%@ TPS decoding", Format.tps(decode))
         case let .prefill(progress, livePrefillTPS, eta, _):
-            var parts = ["Prefilling \(Int((progress * 100).rounded())) percent"]
-            if let live = livePrefillTPS { parts.append("\(Format.tps(live)) TPS") }
-            if let eta { parts.append("ETA \(Format.duration(eta))") }
+            var parts = [tr("Prefilling %lld percent", Int((progress * 100).rounded()))]
+            if let live = livePrefillTPS { parts.append(tr("%@ TPS", Format.tps(live))) }
+            if let eta { parts.append(tr("ETA %@", Format.duration(eta))) }
             return parts.joined(separator: ", ")
-        case .dim:                  return "MTPLX stopped, tap to start"
+        case .dim:                  return tr("MTPLX stopped, tap to start")
         case .loading(let phase):   return phase.label.lowercased()
-        case .degraded:             return "MTPLX degraded"
+        case .degraded:             return tr("MTPLX degraded")
         }
     }
 }

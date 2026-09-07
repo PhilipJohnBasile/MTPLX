@@ -25,18 +25,24 @@ EXIT_TELEMETRY = 6
 
 NATIVE_MTP_FAST_PATH_ENV = dict(NATIVE_MTP_60_FAST_PATH_ENV)
 
+# The prompt suites ship inside the package (pyproject package-data), so they
+# resolve against this file, never against the current directory: `mtplx bench
+# run --suite flappy` has to work from any directory on a pip, brew, or app
+# install, not only from a checkout root.
+PROMPT_SUITE_DIR = Path(__file__).resolve().parents[1] / "benchmarks" / "prompts"
+
 PROMPT_SUITES = {
-    "default": "mtplx/benchmarks/prompts/default.jsonl",
-    "long_code": "mtplx/benchmarks/prompts/long_code.jsonl",
-    "long-code": "mtplx/benchmarks/prompts/long_code.jsonl",
-    "cold-long-code-192": "mtplx/benchmarks/prompts/long_code.jsonl",
-    "long_code_uncapped": "mtplx/benchmarks/prompts/long_code_uncapped.jsonl",
-    "long-code-uncapped": "mtplx/benchmarks/prompts/long_code_uncapped.jsonl",
-    "python_modules_long": "mtplx/benchmarks/prompts/python_modules_long.jsonl",
-    "python-modules-long": "mtplx/benchmarks/prompts/python_modules_long.jsonl",
-    "flappy": "mtplx/benchmarks/prompts/flappy.jsonl",
-    "calibration_coding": "mtplx/benchmarks/prompts/calibration_coding.jsonl",
-    "calibration-coding": "mtplx/benchmarks/prompts/calibration_coding.jsonl",
+    "default": "default.jsonl",
+    "long_code": "long_code.jsonl",
+    "long-code": "long_code.jsonl",
+    "cold-long-code-192": "long_code.jsonl",
+    "long_code_uncapped": "long_code_uncapped.jsonl",
+    "long-code-uncapped": "long_code_uncapped.jsonl",
+    "python_modules_long": "python_modules_long.jsonl",
+    "python-modules-long": "python_modules_long.jsonl",
+    "flappy": "flappy.jsonl",
+    "calibration_coding": "calibration_coding.jsonl",
+    "calibration-coding": "calibration_coding.jsonl",
 }
 
 DISTRIBUTION_SUITES = {
@@ -60,13 +66,18 @@ def default_output_path(kind: str, run_id: str | None = None) -> Path:
 
 
 def prompt_suite_path(suite: str | None, *, fallback: str = "default") -> str:
+    """Absolute path of a packaged prompt suite, or an existing file path as given."""
+
     key = suite or fallback
     if key in PROMPT_SUITES:
-        return PROMPT_SUITES[key]
+        return str(PROMPT_SUITE_DIR / PROMPT_SUITES[key])
     path = Path(key)
     if path.exists():
         return str(path)
-    raise SystemExit(f"unknown prompt suite: {key}")
+    names = ", ".join(sorted(PROMPT_SUITES))
+    raise SystemExit(
+        f"unknown prompt suite {key!r}: expected one of {names}, or the path of a .jsonl file"
+    )
 
 
 def distribution_suite_names(suite: str | None) -> list[str]:

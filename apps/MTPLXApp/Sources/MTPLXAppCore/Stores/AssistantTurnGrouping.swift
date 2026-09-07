@@ -73,13 +73,17 @@ public struct AssistantTurnGroup: Identifiable, Equatable {
     public var sources: [SourceRecord] {
         let persisted = SourceRecord.decodeJSON(finalMessage.sourcesJSON)
         if !persisted.isEmpty { return persisted }
-        let derived = traces.flatMap { trace in
-            SourceRecord.extract(
-                toolName: trace.name,
-                argumentsJSON: trace.argumentsJSON,
-                resultJSON: trace.resultJSON
-            )
-        }
+        // A failed call read nothing, so it has no source even though
+        // a fetch_url call names its URL in the arguments.
+        let derived = traces
+            .filter { $0.status != .failed }
+            .flatMap { trace in
+                SourceRecord.extract(
+                    toolName: trace.name,
+                    argumentsJSON: trace.argumentsJSON,
+                    resultJSON: trace.resultJSON
+                )
+            }
         return SourceRecord.dedupe(derived)
     }
 
@@ -93,9 +97,26 @@ public struct AssistantTurnGroup: Identifiable, Equatable {
         return stats.thinkingTimeMs
     }
 
-    /// The searches the turn ran, for the compact activity chip
-    /// ("Searched: <query>" lines). Order preserved.
+    /// The searches the turn issued, for the compact activity chip
+    /// ("Searched: <query>" lines). Order preserved; includes searches
+    /// that failed (see `searchReceipts` to tell them apart).
     public var searchQueries: [String] {
+        searchReceipts.map(\.query)
+    }
+
+    /// One web search the turn issued: its query and, when the call
+    /// could not be carried out, the reason the tool reported.
+    public struct SearchReceipt: Equatable, Sendable {
+        public let query: String
+        public let failureDetail: String?
+
+        public var failed: Bool { failureDetail != nil }
+    }
+
+    /// Every web search of the turn, oldest first, each marked failed
+    /// or not, so the receipt rows can say "Search failed" instead of
+    /// listing a failed search as one that ran.
+    public var searchReceipts: [SearchReceipt] {
         traces.compactMap { trace in
             guard trace.name == "web_search",
                 let json = trace.argumentsJSON,
@@ -104,12 +125,38 @@ public struct AssistantTurnGroup: Identifiable, Equatable {
                 let query = dict["query"] as? String,
                 !query.isEmpty
             else { return nil }
-            return query
+            return SearchReceipt(query: query, failureDetail: Self.failureDetail(of: trace))
         }
     }
 
+    /// Searches that actually ran (rows persisted before failures were
+    /// recorded are all successes, so old turns keep their counts).
+    public var successfulSearchCount: Int {
+        traces.filter { $0.name == "web_search" && $0.status != .failed }.count
+    }
+
+    public var failedSearchCount: Int {
+        traces.filter { $0.name == "web_search" && $0.status == .failed }.count
+    }
+
+    /// Pages actually read; failed fetches are counted separately.
     public var fetchedPageCount: Int {
-        traces.filter { $0.name == "fetch_url" }.count
+        traces.filter { $0.name == "fetch_url" && $0.status != .failed }.count
+    }
+
+    public var failedFetchCount: Int {
+        traces.filter { $0.name == "fetch_url" && $0.status == .failed }.count
+    }
+
+    /// The reason a failed trace recorded (`detail`, else the error
+    /// code), or nil for a trace that ran.
+    private static func failureDetail(of trace: ToolTraceRecord) -> String? {
+        guard trace.status == .failed else { return nil }
+        guard let json = trace.resultJSON,
+            let data = json.data(using: .utf8),
+            let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return "" }
+        return (dict["detail"] as? String) ?? (dict["error"] as? String) ?? ""
     }
 
     public static func == (lhs: AssistantTurnGroup, rhs: AssistantTurnGroup) -> Bool {

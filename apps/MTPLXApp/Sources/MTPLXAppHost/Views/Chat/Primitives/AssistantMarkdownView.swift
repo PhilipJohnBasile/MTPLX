@@ -499,8 +499,8 @@ private struct AssistantTableView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .background(
                     rowIndex == 0 && hasHeader
-                        ? Color.white.opacity(0.05)
-                        : (rowIndex % 2 == 0 ? Color.clear : Color.white.opacity(0.02))
+                        ? Brand.wash.opacity(0.05)
+                        : (rowIndex % 2 == 0 ? Color.clear : Brand.wash.opacity(0.02))
                 )
                 if rowIndex == 0 && hasHeader {
                     Divider()
@@ -1116,12 +1116,12 @@ private struct StreamingOpenCodeCardView: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Text(language == .generic ? "CODE" : language.rawValue.uppercased())
+                Text(language == .generic ? tr("CODE") : language.rawValue.uppercased())
                     .font(.system(size: 9, weight: .heavy, design: .monospaced))
                     .tracking(1.5)
                     .foregroundStyle(Brand.typeTertiary)
                 Spacer(minLength: 12)
-                Text("STREAMING")
+                Text(tr("STREAMING"))
                     .font(.system(size: 8, weight: .heavy, design: .monospaced))
                     .tracking(1.2)
                     .foregroundStyle(Brand.typeTertiary.opacity(0.7))
@@ -1132,17 +1132,17 @@ private struct StreamingOpenCodeCardView: View, Equatable {
                         forType: .string
                     )
                 } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
+                    Label(tr("Copy"), systemImage: "doc.on.doc")
                         .font(.system(size: 10, weight: .semibold))
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Brand.typeTertiary)
-                .help("Copy code")
+                .help(tr("Copy code"))
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 5)
-            .background(Color.white.opacity(0.035))
+            .background(Brand.wash.opacity(0.035))
 
             StreamingCodeTextViewport(
                 renderModel: renderModel,
@@ -1153,9 +1153,9 @@ private struct StreamingOpenCodeCardView: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(
-                "\(language.rawValue) code block, streaming"
+                tr("%@ code block, streaming", language.rawValue)
             )
-            .accessibilityHint("Use the Copy button to copy the full code.")
+            .accessibilityHint(tr("Use the Copy button to copy the full code."))
         }
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1360,7 +1360,7 @@ struct StreamingCodeTextViewport: NSViewRepresentable {
                     string: "\n",
                     attributes: [
                         .font: MTPLXCodeHighlighter.codeFont,
-                        .foregroundColor: NSColor(calibratedWhite: 0.88, alpha: 1.0),
+                        .foregroundColor: MTPLXCodeHighlighter.Palette.adaptive.base,
                     ]
                 ))
             }
@@ -1615,7 +1615,7 @@ extension Theme {
                 FontFamilyVariant(.monospaced)
                 FontSize(13)
                 ForegroundColor(Brand.typeHi)
-                BackgroundColor(Color.white.opacity(0.06))
+                BackgroundColor(Brand.wash.opacity(0.06))
             }
             .link {
                 ForegroundColor(Brand.accentChrome)
@@ -1725,7 +1725,7 @@ private struct AssistantCodeBlockView: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
             .padding(.bottom, 5)
-            .background(Color.white.opacity(0.035))
+            .background(Brand.wash.opacity(0.035))
 
             CodeTextViewport(
                 code: code,
@@ -1736,7 +1736,7 @@ private struct AssistantCodeBlockView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(codeAccessibilitySummary)
-            .accessibilityHint("Use the Copy button to copy the full code.")
+            .accessibilityHint(tr("Use the Copy button to copy the full code."))
         }
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -1751,8 +1751,8 @@ private struct AssistantCodeBlockView: View {
     }
 
     private var codeAccessibilitySummary: String {
-        let label = languageLabel ?? "Plain text"
-        return "\(label) code block, \(code.count) characters"
+        let label = languageLabel ?? tr("Plain text")
+        return tr("%@ code block, %lld characters", label, code.count)
     }
 
     private var codeViewportHeight: CGFloat {
@@ -1771,13 +1771,13 @@ private struct AssistantCodeBlockView: View {
                 showCopied = false
             }
         } label: {
-            Label(showCopied ? "Copied" : "Copy", systemImage: showCopied ? "checkmark" : "doc.on.doc")
+            Label(showCopied ? tr("Copied") : tr("Copy"), systemImage: showCopied ? "checkmark" : "doc.on.doc")
                 .font(.system(size: 11, weight: .semibold))
                 .labelStyle(.titleAndIcon)
                 .foregroundStyle(showCopied ? Brand.success : Brand.typeTertiary)
         }
         .buttonStyle(.plain)
-        .help(showCopied ? "Copied" : "Copy code")
+        .help(showCopied ? tr("Copied") : tr("Copy code"))
     }
 }
 
@@ -1800,7 +1800,7 @@ private struct CodeTextViewport: NSViewRepresentable {
         textView.isSelectable = false
         textView.isRichText = false
         textView.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        textView.textColor = NSColor(calibratedWhite: 0.88, alpha: 1.0)
+        textView.textColor = MTPLXCodeHighlighter.Palette.adaptive.base
         textView.textContainerInset = NSSize(width: 12, height: 10)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true

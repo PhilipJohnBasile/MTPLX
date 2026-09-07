@@ -121,7 +121,7 @@ struct TabBarItem: View {
 
                     if let badge {
                         badgeView(count: badge)
-                            .offset(x: 14, y: -10)
+                            .offset(towardsTrailing: 14, y: -10)
                     }
                 }
                 .frame(height: 22)

@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import MTPLXAppCore
 @preconcurrency import Sparkle
 
 /// Sparkle wiring with gentle scheduled-update reminders.
@@ -116,9 +117,10 @@ extension MTPLXAppUpdater: SPUStandardUserDriverDelegate {
 
 struct CheckForUpdatesCommand: View {
     @ObservedObject var updater: MTPLXAppUpdater
+    @ObservedObject var languageStore: LanguageStore
 
     var body: some View {
-        Button("Check for Updates...") {
+        Button(L10n.string("Check for Updates...", language: languageStore.language)) {
             updater.checkForUpdates()
         }
         .disabled(!updater.canCheckForUpdates)

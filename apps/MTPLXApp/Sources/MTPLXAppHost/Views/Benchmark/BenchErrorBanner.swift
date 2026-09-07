@@ -1,4 +1,5 @@
 import SwiftUI
+import MTPLXAppCore
 
 // MARK: - BenchErrorBanner
 //
@@ -19,7 +20,7 @@ struct BenchErrorBanner: View {
                 .foregroundStyle(Brand.typeBody)
                 .lineLimit(2)
             Spacer()
-            Button("Dismiss", action: onDismiss)
+            Button(tr("Dismiss"), action: onDismiss)
                 .buttonStyle(.plain)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Brand.danger)

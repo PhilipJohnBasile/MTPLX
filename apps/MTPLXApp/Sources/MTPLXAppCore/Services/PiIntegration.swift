@@ -121,7 +121,7 @@ public struct PiIntegration: Sendable {
             return PiLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "could not prepare Pi terminal command: \(error)"
+                detail: tr("could not prepare Pi terminal command: %@", String(describing: error))
             )
         }
         guard isCurrent?() ?? true else {
@@ -155,7 +155,7 @@ public struct PiIntegration: Sendable {
                 return PiLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: "could not open Pi automatically: open timed out after 30s and was terminated"
+                    detail: tr("could not open Pi automatically: open timed out after 30s and was terminated")
                 )
             }
             guard process.terminationStatus == 0 else {
@@ -166,8 +166,8 @@ public struct PiIntegration: Sendable {
                     action: .unavailable,
                     command: command,
                     detail: message.isEmpty
-                        ? "could not open Pi automatically: open exited \(process.terminationStatus)"
-                        : "could not open Pi automatically: \(message)"
+                        ? tr("could not open Pi automatically: open exited %@", String(process.terminationStatus))
+                        : tr("could not open Pi automatically: %@", message)
                 )
             }
             let receipt = await MTPLXTerminalHandoffLease.awaitReceipt(
@@ -194,7 +194,7 @@ public struct PiIntegration: Sendable {
                 return PiLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: "Pi Terminal did not report its launch receipt."
+                    detail: tr("Pi Terminal did not report its launch receipt.")
                 )
             }
             guard isCurrent?() ?? true else {
@@ -202,7 +202,7 @@ public struct PiIntegration: Sendable {
                 return PiLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: "Pi handoff cancelled because the daemon lifecycle changed.",
+                    detail: tr("Pi handoff cancelled because the daemon lifecycle changed."),
                     launchedProcessIDs: [lease.processID],
                     terminalHandoffLease: lease
                 )
@@ -210,7 +210,7 @@ public struct PiIntegration: Sendable {
             return PiLaunchResult(
                 action: .launched,
                 command: command,
-                detail: "opened Pi in Terminal",
+                detail: tr("opened Pi in Terminal"),
                 launchedProcessIDs: [lease.processID],
                 terminalHandoffLease: lease
             )
@@ -219,14 +219,14 @@ public struct PiIntegration: Sendable {
             return PiLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "could not open Pi automatically: \(error)"
+                detail: tr("could not open Pi automatically: %@", String(describing: error))
             )
         }
         #else
         return PiLaunchResult(
             action: .unavailable,
             command: command,
-            detail: "automatic Pi launch currently requires macOS Terminal"
+            detail: tr("automatic Pi launch currently requires macOS Terminal")
         )
         #endif
     }
@@ -235,7 +235,7 @@ public struct PiIntegration: Sendable {
         PiLaunchResult(
             action: .unavailable,
             command: command,
-            detail: "Pi handoff cancelled because the daemon lifecycle changed."
+            detail: tr("Pi handoff cancelled because the daemon lifecycle changed.")
         )
     }
 
@@ -304,6 +304,7 @@ public struct PiIntegration: Sendable {
                     baseURL: baseURL,
                     apiKey: apiKey,
                     contextWindow: contextWindow,
+                    vision: MTPLXModelOption.supportsVision(model: configuration.model),
                     reasoningEnabled: OpenCodeIntegration.reasoningEnabled(forModelID: modelID)
                 )
             )
@@ -518,9 +519,11 @@ public struct PiIntegration: Sendable {
                 $0.objectValue?["id"]?.stringValue == freshID
             }) {
                 let existingEntry = resultModels[index].objectValue ?? [:]
-                resultModels[index] = .object(
-                    fillMissingDeep(existing: existingEntry, defaults: freshObject)
-                )
+                var entry = fillMissingDeep(existing: existingEntry, defaults: freshObject)
+                if freshObject["input"]?.arrayValue?.contains(.string("image")) == true {
+                    entry["input"] = freshObject["input"]
+                }
+                resultModels[index] = .object(entry)
             } else {
                 resultModels.append(freshModel)
             }
@@ -534,6 +537,7 @@ public struct PiIntegration: Sendable {
         baseURL: String,
         apiKey: String,
         contextWindow: Int,
+        vision: Bool,
         reasoningEnabled: Bool
     ) -> [String: JSONValue] {
         // Mirrors the CLI provider block (mtplx/pi.py build_pi_provider_config):
@@ -569,7 +573,7 @@ public struct PiIntegration: Sendable {
                         "minimal": .null,
                         "xhigh": .string("xhigh"),
                     ]),
-                    "input": .array([.string("text")]),
+                    "input": .array(vision ? [.string("text"), .string("image")] : [.string("text")]),
                     "contextWindow": .number(Double(contextWindow)),
                     // Pi silently substitutes a 16,384 output ceiling for
                     // models whose metadata omits maxTokens. Advertise the

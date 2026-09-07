@@ -5,9 +5,13 @@ import path from "node:path";
 
 const MTPLX_BACKEND = process.env.MTPLX_BACKEND_URL ?? "http://127.0.0.1:8000";
 
+// The server judges a browser request same-origin when its `Origin` matches
+// the `Host` it arrived with. Keeping the dev page's Host on proxied requests
+// (changeOrigin: false) makes `http://localhost:5173` pages same-origin to the
+// backend, so dev-mode POSTs and /admin calls pass without an allowlist.
 const proxyTarget = {
   target: MTPLX_BACKEND,
-  changeOrigin: true,
+  changeOrigin: false,
   secure: false,
   ws: true,
 };
@@ -39,6 +43,8 @@ export default defineConfig({
       "/health": proxyTarget,
       "/metrics": proxyTarget,
       "/admin": proxyTarget,
+      // Browser sign-in (POST /mtplx/browser-auth from the sign-in gate).
+      "/mtplx": proxyTarget,
     },
   },
 });

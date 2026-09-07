@@ -21,8 +21,8 @@ struct ConvertStage: View {
 
     var body: some View {
         ForgeStageShell(
-            title: "Converting to MLX",
-            subtitle: "Downloading the model and converting it to run on your Mac. You can cancel anytime — your progress is saved.",
+            title: tr("Converting to MLX"),
+            subtitle: tr("Downloading the model and converting it to run on your Mac. You can cancel anytime — your progress is saved."),
             step: .convert,
             symbol: "arrow.triangle.2.circlepath",
             symbolTint: Brand.accentChrome
@@ -37,7 +37,7 @@ struct ConvertStage: View {
             }
         } footer: {
             ForgePrimaryButton(
-                "Cancel build",
+                tr("Cancel build"),
                 icon: "xmark",
                 isEnabled: orchestrator.isBuilding
             ) {
@@ -53,7 +53,7 @@ struct ConvertStage: View {
         ForgePhaseCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
-                    Text("DOWNLOAD")
+                    Text(tr("DOWNLOAD"))
                         .font(.system(size: 10, weight: .heavy, design: .monospaced))
                         .tracking(1.5)
                         .foregroundStyle(Brand.typeTertiary)
@@ -62,7 +62,7 @@ struct ConvertStage: View {
                        let total = progress.totalBytes,
                        total > 0
                     {
-                        Text("\(formatBytesShort(progress.bytesOnDisk)) of \(formatBytesShort(total))")
+                        Text(tr("%@ of %@", formatBytesShort(progress.bytesOnDisk), formatBytesShort(total)))
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(Brand.typeSecondary)
                     } else if let progress = orchestrator.downloadProgress {
@@ -83,8 +83,8 @@ struct ConvertStage: View {
             height: 8,
             minimumFillWidth: 8
         )
-        .accessibilityLabel("Download progress")
-        .accessibilityValue("\(Int(downloadFraction * 100)) percent")
+        .accessibilityLabel(tr("Download progress"))
+        .accessibilityValue(tr("%lld percent", Int(downloadFraction * 100)))
     }
 
     private var downloadFraction: Double {
@@ -105,7 +105,7 @@ struct ConvertStage: View {
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(rate > 50_000 ? Brand.typeSecondary : Brand.typeTertiary)
             if rate > 0, let eta, eta > 0 {
-                Text("ETA \(formatDuration(eta))")
+                Text(tr("ETA %@", formatDuration(eta)))
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundStyle(Brand.typeTertiary)
             }
@@ -133,15 +133,15 @@ struct ConvertStage: View {
             heading: "Steps",
             rows: [
                 ForgePhaseRow(
-                    label: "Download model",
+                    label: tr("Download model"),
                     state: downloadRowState
                 ),
                 ForgePhaseRow(
-                    label: "Convert to MLX",
+                    label: tr("Convert to MLX"),
                     state: phaseRowState(phase: phase, matchingLabel: "to_mlx", anyProgress: true)
                 ),
                 ForgePhaseRow(
-                    label: "Compress for size",
+                    label: tr("Compress for size"),
                     state: phaseRowState(phase: phase, matchingLabel: "quantize_body", anyProgress: false)
                 )
             ]
@@ -180,15 +180,15 @@ struct ConvertStage: View {
 
     private func formatBytesShort(_ bytes: Int64) -> String {
         let gib = Double(bytes) / 1_073_741_824.0
-        if gib >= 1 { return String(format: "%.2f GB", gib) }
+        if gib >= 1 { return tr("%.2f GB", gib) }
         let mib = Double(bytes) / 1_048_576.0
-        return String(format: "%.0f MB", mib)
+        return tr("%.0f MB", mib)
     }
 
     private func formatRate(_ bytesPerSecond: Double) -> String {
         if bytesPerSecond < 1024 { return "—" }
         let mbps = bytesPerSecond / 1_048_576.0
-        return String(format: "%.1f MB/s", mbps)
+        return tr("%.1f MB/s", mbps)
     }
 
     private func formatDuration(_ seconds: Double) -> String {
@@ -196,9 +196,9 @@ struct ConvertStage: View {
         let h = total / 3600
         let m = (total % 3600) / 60
         let s = total % 60
-        if h > 0 { return "\(h)h \(m)m" }
-        if m > 0 { return "\(m)m \(s)s" }
-        return "\(s)s"
+        if h > 0 { return tr("%lldh %lldm", h, m) }
+        if m > 0 { return tr("%lldm %llds", m, s) }
+        return tr("%llds", s)
     }
 }
 
@@ -360,7 +360,7 @@ struct ForgeFailureBanner: View {
                 .foregroundStyle(Brand.danger)
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Build failed")
+                Text(tr("Build failed"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Brand.typeHi)
                 Text(message)

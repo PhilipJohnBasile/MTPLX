@@ -233,13 +233,13 @@ public final class BenchmarkOrchestrator: ObservableObject {
         } catch let MTPLXAPIClientError.httpStatus(409, body) {
             // Daemon already has an active run - surface its id so the
             // overlay can rehydrate against it.
-            lastError = "Another AIME run is already active."
+            lastError = tr("Another AIME run is already active.")
             AIMEDiagnostics.record("start_conflict_active_daemon_run", fields: diagnosticFields())
             // Best effort: refresh active+snapshot to rehydrate.
             await refreshActiveRun()
             _ = body
         } catch {
-            lastError = "Failed to start AIME run: \(error.localizedDescription)"
+            lastError = tr("Failed to start AIME run: %@", error.localizedDescription)
             AIMEDiagnostics.record(
                 "start_failed",
                 fields: diagnosticFields(extra: ["error_type": .string(String(describing: type(of: error)))])
@@ -256,7 +256,7 @@ public final class BenchmarkOrchestrator: ObservableObject {
         do {
             _ = try await apiClientProvider().aimePause(runId: runID)
         } catch {
-            lastError = "Pause failed: \(error.localizedDescription)"
+            lastError = tr("Pause failed: %@", error.localizedDescription)
             pausePending = false
         }
     }
@@ -267,7 +267,7 @@ public final class BenchmarkOrchestrator: ObservableObject {
         do {
             _ = try await apiClientProvider().aimeResume(runId: runID)
         } catch {
-            lastError = "Resume failed: \(error.localizedDescription)"
+            lastError = tr("Resume failed: %@", error.localizedDescription)
         }
     }
 
@@ -280,7 +280,7 @@ public final class BenchmarkOrchestrator: ObservableObject {
             _ = try await apiClientProvider().aimeSkip(runId: runID)
             refreshSkipSnapshotSoon(runID: runID, skippedIdx: currentIdx)
         } catch {
-            lastError = "Skip failed: \(error.localizedDescription)"
+            lastError = tr("Skip failed: %@", error.localizedDescription)
             skipPending = false
         }
     }
@@ -322,7 +322,7 @@ public final class BenchmarkOrchestrator: ObservableObject {
             await applyCancelledSnapshot(snapshot)
             refreshCancelledSnapshotSoon(runID: activeRunID)
         } catch {
-            lastError = "Cancel failed: \(error.localizedDescription)"
+            lastError = tr("Cancel failed: %@", error.localizedDescription)
             AIMEDiagnostics.record(
                 "cancel_failed",
                 fields: diagnosticFields(extra: ["error_type": .string(String(describing: type(of: error)))])
@@ -376,7 +376,7 @@ public final class BenchmarkOrchestrator: ObservableObject {
         if discarded {
             lastError = nil
         } else {
-            lastError = "Could not remove saved AIME run \(currentRunID)."
+            lastError = tr("Could not remove saved AIME run %@.", String(describing: currentRunID))
         }
         return discarded
     }
@@ -678,7 +678,7 @@ public final class BenchmarkOrchestrator: ObservableObject {
                 }
             } catch BenchmarkStreamError.daemonUnreachable {
                 await MainActor.run {
-                    self?.lastError = "MTPLX is unreachable — is it running?"
+                    self?.lastError = tr("MTPLX is unreachable — is it running?")
                     self?.state = .error
                     AIMEDiagnostics.record(
                         "stream_task_daemon_unreachable",
@@ -708,7 +708,7 @@ public final class BenchmarkOrchestrator: ObservableObject {
                         self.lastError = nil
                         return
                     }
-                    self.lastError = "Stream error: \(error.localizedDescription)"
+                    self.lastError = tr("Stream error: %@", error.localizedDescription)
                     self.state = .error
                     AIMEDiagnostics.record(
                         "stream_task_failed",

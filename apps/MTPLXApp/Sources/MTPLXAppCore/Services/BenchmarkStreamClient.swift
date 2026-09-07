@@ -230,7 +230,7 @@ public final class BenchmarkStreamClient: Sendable {
             )
         case "error":
             return .error(
-                message: payload.message ?? "unknown error",
+                message: payload.message ?? tr("unknown error"),
                 recoverable: payload.recoverable ?? false
             )
         default:

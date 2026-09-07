@@ -145,7 +145,7 @@ final class CodeHighlighterTests: XCTestCase {
         )
         XCTAssertEqual(line.string, "def go(x=3):  # start \"quoted\"")
         XCTAssertEqual(endState, .none)
-        let palette = MTPLXCodeHighlighter.Palette.dark
+        let palette = MTPLXCodeHighlighter.Palette.adaptive
         let used = colors(in: line)
         XCTAssertTrue(used.contains(palette.keyword))
         XCTAssertTrue(used.contains(palette.function))
@@ -166,7 +166,7 @@ final class CodeHighlighterTests: XCTestCase {
             state: open.endState
         )
         XCTAssertEqual(middle.endState, .tripleString("\""))
-        let palette = MTPLXCodeHighlighter.Palette.dark
+        let palette = MTPLXCodeHighlighter.Palette.adaptive
         XCTAssertEqual(colors(in: middle.line), [palette.string])
         let close = MTPLXCodeHighlighter.highlightLine(
             "end\"\"\" + 1",

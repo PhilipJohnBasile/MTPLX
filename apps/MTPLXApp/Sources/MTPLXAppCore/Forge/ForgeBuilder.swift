@@ -165,7 +165,7 @@ public struct ForgeBuildOutcome: Equatable, Sendable {
             phase: json["phase"] as? String ?? "verify",
             verdict: verdict,
             failureReasons: json["failure_reasons"] as? [String] ?? [],
-            message: json["message"] as? String ?? "MTP did not accelerate this model.",
+            message: json["message"] as? String ?? tr("MTP did not accelerate this model."),
             diagnostic: json["diagnostic"] as? String,
             architectureID: json["architecture_id"] as? String,
             arTokS: Self.doubleLike(json["ar_tok_s"]),

@@ -5,7 +5,6 @@ import {
   ServerTokSTile,
   VerifyRatioTile,
 } from "./VerifyTiles";
-import { VsVLLMOraclePanel } from "./VsVLLMOraclePanel";
 
 export function SpeculativeTab() {
   return (
@@ -25,10 +24,6 @@ export function SpeculativeTab() {
       </div>
       <div className="col-span-12 lg:col-span-4">
         <ServerTokSTile />
-      </div>
-
-      <div className="col-span-12">
-        <VsVLLMOraclePanel />
       </div>
     </div>
   );

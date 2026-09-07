@@ -105,7 +105,7 @@ class RaggedBatchKVCache:
         else:
             self.offsets = None
         # telemetry
-        # HOST-side monotone capacity upper bound (fable-main review, item 3).
+        # HOST-side monotone capacity upper bound (PR #391-main review, item 3).
         # When set, ``update_and_fetch`` grows the physical buffer off this Python
         # int and NEVER reads the device ``offsets`` for capacity -- so once
         # ``write_start`` depends on the accept mask (a device expression) the call

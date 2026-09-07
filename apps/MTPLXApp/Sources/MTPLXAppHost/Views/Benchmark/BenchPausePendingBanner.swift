@@ -1,4 +1,5 @@
 import SwiftUI
+import MTPLXAppCore
 
 // MARK: - BenchPausePendingBanner
 //
@@ -14,11 +15,11 @@ struct BenchPausePendingBanner: View {
         HStack(spacing: 8) {
             Image(systemName: "pause.circle.fill")
                 .foregroundStyle(Brand.warning)
-            Text("Stopping problem \(pendingProblemIdx)...")
+            Text(tr("Stopping problem %lld...", pendingProblemIdx))
                 .font(.caption)
                 .foregroundStyle(Brand.typeBody)
             Spacer()
-            Button("Cancel pause", action: onCancelPause)
+            Button(tr("Cancel pause"), action: onCancelPause)
                 .buttonStyle(.plain)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Brand.warning)

@@ -163,11 +163,19 @@ fi
 EOF
 chmod 644 "$shell_hook"
 
+# Same rule as scripts/install_macos.sh (audit C-04): never write through a
+# Homebrew-owned `mtplx` (the symlink into the Cellar, or any file this script
+# did not generate); `cp` onto that symlink used to overwrite the Cellar program.
 homebrew_launcher_installed=0
+homebrew_target=/opt/homebrew/bin/mtplx
 if [ "${MTPLX_SKIP_HOMEBREW_LAUNCHER:-0}" != "1" ] && [ -d /opt/homebrew/bin ] && [ -w /opt/homebrew/bin ]; then
-  cp "$launcher" /opt/homebrew/bin/mtplx
-  chmod 755 /opt/homebrew/bin/mtplx
-  homebrew_launcher_installed=1
+  if [ -L "$homebrew_target" ] || { [ -e "$homebrew_target" ] && ! grep -q 'MTPLX preview launcher' "$homebrew_target" 2>/dev/null; }; then
+    echo "Skipped $homebrew_target: it already exists and was not created by this installer (it may belong to Homebrew)."
+  else
+    cp "$launcher" "$homebrew_target"
+    chmod 755 "$homebrew_target"
+    homebrew_launcher_installed=1
+  fi
 fi
 
 path_snippet='

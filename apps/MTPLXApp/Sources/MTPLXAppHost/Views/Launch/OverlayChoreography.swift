@@ -96,7 +96,7 @@ struct OverlayRowHover: ViewModifier {
                     .fill(hovering ? Motion.rowHoverFill : Color.clear)
                     .padding(.horizontal, Motion.rowHoverInset)
                     .shadow(
-                        color: .black.opacity(hovering ? Motion.rowHoverShadowOpacity : 0),
+                        color: Brand.shade.opacity(hovering ? Motion.rowHoverShadowOpacity : 0),
                         radius: hovering ? Motion.rowHoverShadowRadius : 0,
                         x: 0,
                         y: hovering ? Motion.rowHoverShadowYOffset : 0

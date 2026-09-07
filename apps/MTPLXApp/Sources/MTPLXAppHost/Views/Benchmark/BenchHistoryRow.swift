@@ -32,7 +32,7 @@ struct BenchHistoryRow: View {
     }
 
     private var historyAccessibilityLabel: String {
-        "Run \(formattedDate). Score \(run.score) of \(run.total). Accuracy \(accuracyLabel)."
+        tr("Run %@. Score %lld of %lld. Accuracy %@.", formattedDate, run.score, run.total, accuracyLabel)
     }
 
     private var scorePill: some View {
@@ -97,8 +97,8 @@ struct BenchHistoryRow: View {
             .split(separator: "/").last.map(String.init) ?? run.model
         if let durationMs = run.durationMs {
             let mins = max(1, Int(round(Double(durationMs) / 60_000)))
-            return "\(modelShort) · \(mins) min · state \(run.state)"
+            return tr("%@ · %lld min · state %@", modelShort, mins, run.state)
         }
-        return "\(modelShort) · state \(run.state)"
+        return tr("%@ · state %@", modelShort, run.state)
     }
 }

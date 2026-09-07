@@ -579,3 +579,37 @@ def test_per_session_entry_retention_bounds_divergent_siblings():
     )
     assert sum(1 for e in bank._entries.values() if e.session_id == "other") == 1
     assert sum(1 for e in bank._entries.values() if e.session_id == "agent") == 3
+
+
+def test_longest_shared_prefix_tokens_sees_entries_that_are_not_exact_prefixes():
+    bank = SessionBank(max_entries=4, max_bytes=1024, per_session_max_bytes=512)
+    runtime = SimpleNamespace(model_path=Path("models/example"), mtp_enabled=True)
+    shared = list(range(1, 41))
+    # The forced-round shape: prompt + sentinel + completion, then a follow-up
+    # prompt that shares the 40-token head but not the sentinel.
+    bank.put(
+        runtime=runtime,
+        token_ids=shared + [901, 902, 903],
+        cache=[],
+        logits=None,
+        hidden=None,
+        session_id="agent",
+        nbytes_override=16,
+    )
+    bank.put(
+        runtime=runtime,
+        token_ids=[7, 8, 9, 10],
+        cache=[],
+        logits=None,
+        hidden=None,
+        session_id="other",
+        nbytes_override=16,
+    )
+    follow_up = shared + [501, 502, 503, 504]
+
+    assert bank.longest_prefix(follow_up) is None
+    assert bank.longest_shared_prefix_tokens(follow_up) == 40
+    assert bank.longest_shared_prefix_tokens(follow_up, session_id="agent") == 40
+    assert bank.longest_shared_prefix_tokens(follow_up, session_id="other") == 0
+    assert bank.longest_shared_prefix_tokens([7, 8, 9, 99]) == 3
+    assert bank.longest_shared_prefix_tokens([]) == 0

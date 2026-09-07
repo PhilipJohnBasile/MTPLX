@@ -63,7 +63,14 @@ struct MTPLXApp: App {
     @NSApplicationDelegateAdaptor(MTPLXApplicationDelegate.self) private var appDelegate
     @StateObject private var backend: MTPLXBackendStore
     @StateObject private var themeStore = ThemeStore()
+    /// Language choice; constructed in init() so tr() answers in the
+    /// persisted language before the first body evaluation.
+    @StateObject private var languageStore: LanguageStore
     @StateObject private var router = AppRouter()
+    /// Settings tab editing session. Owned here, like the router, so the
+    /// draft a user is editing survives the dashboard rebuilding the tab
+    /// on every selection change.
+    @StateObject private var settingsDrafts = SettingsDraftStore()
     @StateObject private var chatViewModel: ChatViewModel
     @StateObject private var hermesAgentStore: HermesAgentStore
     @StateObject private var stopCoordinator: AppStopCoordinator
@@ -78,6 +85,10 @@ struct MTPLXApp: App {
     /// dismissable but does NOT cancel the run). Same lifetime
     /// guarantee as forgeOrchestrator.
     @StateObject private var benchmarkOrchestrator: BenchmarkOrchestrator
+    /// What the chat store had to do at launch to open (kept aside an
+    /// unreadable store, or fell back to memory). Lives at the app root so
+    /// the sidebar's banner survives until the user dismisses it.
+    @StateObject private var chatStoreRecovery: ChatStoreRecoveryState
     private let chatContainer: ModelContainer
     private let memoryPressureMonitor = AppMemoryPressureMonitor()
 
@@ -86,19 +97,17 @@ struct MTPLXApp: App {
         // symlink on every app launch before it can run the bundled Python
         // without the signature-safe bytecode cache environment.
         _ = try? RuntimeSetupService.migrateLegacyTerminalShimIfNeeded()
+        let languageStore = LanguageStore()
         let backend = MTPLXBackendStore()
         let hermesAgentStore = HermesAgentStore()
         let benchmarkOrchestrator = BenchmarkOrchestrator()
         let stopCoordinator = AppStopCoordinator()
-        let container: ModelContainer
-        do {
-            container = try ChatStore.makeContainer()
-        } catch {
-            // SwiftData store is corrupt or inaccessible. Fall back to
-            // an in-memory store so the app can still launch; the user
-            // gets a fresh chat history but the dashboard still works.
-            container = try! ChatStore.makeInMemoryContainer()
-        }
+        // A store that will not open is kept beside itself and replaced
+        // with a fresh one, or the app runs on memory for this session;
+        // the notice reaches the chat sidebar so neither is silent.
+        let openedStore = ChatStore.open()
+        let container = openedStore.container
+        let chatStoreRecovery = ChatStoreRecoveryState(notice: openedStore.notice)
         let viewModel = ChatViewModel(
             container: container,
             chatClientProvider: { [backend] in
@@ -125,13 +134,18 @@ struct MTPLXApp: App {
                 backend.markDaemonUnreachable(
                     reason: "MTPLX lost contact with the model server. Start it again."
                 )
+            },
+            onLiveTurnActivityChanged: { [backend] streaming in
+                backend.setChatTurnStreaming(streaming)
             }
         )
         _backend = StateObject(wrappedValue: backend)
+        _languageStore = StateObject(wrappedValue: languageStore)
         _chatViewModel = StateObject(wrappedValue: viewModel)
         _hermesAgentStore = StateObject(wrappedValue: hermesAgentStore)
         _stopCoordinator = StateObject(wrappedValue: stopCoordinator)
         _benchmarkOrchestrator = StateObject(wrappedValue: benchmarkOrchestrator)
+        _chatStoreRecovery = StateObject(wrappedValue: chatStoreRecovery)
         self.chatContainer = container
         memoryPressureMonitor.start()
         stopCoordinator.stopAllHandler = { [backend, viewModel, hermesAgentStore, benchmarkOrchestrator] reason in
@@ -170,12 +184,21 @@ struct MTPLXApp: App {
             ContentView(backend: backend)
                 .environmentObject(backend)
                 .environmentObject(themeStore)
+                .environmentObject(languageStore)
+                // Live language switch: every tr() lookup already answers
+                // in the new language once the store publishes; the locale
+                // drives SwiftUI's own number/date formatting and the
+                // layout direction flips the whole tree for Arabic.
+                .environment(\.locale, languageStore.language.locale)
+                .environment(\.layoutDirection, languageStore.language.isRightToLeft ? .rightToLeft : .leftToRight)
                 .environmentObject(router)
+                .environmentObject(settingsDrafts)
                 .environmentObject(chatViewModel)
                 .environmentObject(hermesAgentStore)
                 .environmentObject(stopCoordinator)
                 .environmentObject(forgeOrchestrator)
                 .environmentObject(benchmarkOrchestrator)
+                .environmentObject(chatStoreRecovery)
                 .modelContainer(chatContainer)
                 .task {
                     // Wire the benchmark orchestrator to read the
@@ -195,17 +218,31 @@ struct MTPLXApp: App {
                         }
                     )
                     backend.loadPersistedSettings()
-                    await backend.refreshRuntimeUpdateStatus()
                     // Onboarding gate: if the user has never finished
                     // the first-launch flow, the entire window takes
                     // over with `OnboardingExperienceView` and the
                     // daemon stays stopped — there's nothing useful to
-                    // do until they pick a model and download it.
+                    // do until they pick a model and download it. The
+                    // decision reads the persisted settings alone, so a
+                    // brand-new user never sees the dashboard shell
+                    // while a network check is pending.
                     if backend.configuration.onboardingCompletedAt == nil {
                         router.onboardingPhase = .onboarding
                     } else {
                         router.onboardingPhase = .completed
+                        // Installs that onboarded before the Language
+                        // step existed are asked once, here, so they
+                        // learn the app speaks their language and where
+                        // to change it. Stamped on dismiss (ContentView).
+                        if backend.configuration.shouldOfferLanguagePrompt {
+                            router.languagePromptPresented = true
+                        }
                     }
+                    // The runtime card (installed CLI version, published
+                    // manifest) is advisory: refresh it in the background
+                    // and never ahead of the onboarding decision or a
+                    // daemon launch.
+                    backend.scheduleRuntimeUpdateStatusRefresh()
                     // Daemon-ready handoff: launch targets with their own
                     // user surface should open only after the server is
                     // actually responding. Chat flips into the native
@@ -278,26 +315,26 @@ struct MTPLXApp: App {
             // `replacing` (not `after`): the system's default About
             // item would otherwise sit alongside ours (QA-124).
             CommandGroup(replacing: .appInfo) {
-                Button("About MTPLX…") { router.presentAbout() }
-                CheckForUpdatesCommand(updater: appUpdater)
+                Button(tr("About MTPLX…")) { router.presentAbout() }
+                CheckForUpdatesCommand(updater: appUpdater, languageStore: languageStore)
             }
 
             CommandGroup(after: .appInfo) {
                 Divider()
 
-                Button("Start MTPLX") {
+                Button(tr("Start MTPLX")) {
                     Task { await backend.startDaemon() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
 
-                Button("Stop MTPLX") {
+                Button(tr("Stop MTPLX")) {
                     Task {
                         await stopCoordinator.stopAll(reason: "menu_stop_daemon")
                     }
                 }
                 .keyboardShortcut(".", modifiers: [.command])
 
-                Button("Restart MTPLX") {
+                Button(tr("Restart MTPLX")) {
                     Task {
                         await stopCoordinator.stopAll(reason: "menu_restart_daemon")
                         await backend.startDaemon()
@@ -307,7 +344,7 @@ struct MTPLXApp: App {
 
                 Divider()
 
-                Button("Toggle Performance Lock") {
+                Button(tr("Toggle Performance Lock")) {
                     Task {
                         var config = backend.configuration
                         config.performanceLock.toggle()
@@ -318,7 +355,7 @@ struct MTPLXApp: App {
                 .keyboardShortcut("l", modifiers: [.command, .option])
             }
 
-            CommandMenu("View") {
+            CommandMenu(tr("View")) {
                 ForEach(Array(AppTab.allCases.enumerated()), id: \.element.id) { index, tab in
                     Button(tab.title) {
                         router.select(tab)
@@ -326,12 +363,12 @@ struct MTPLXApp: App {
                     .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.command])
                 }
                 Divider()
-                Button("Next Tab") { router.nextTab() }
+                Button(tr("Next Tab")) { router.nextTab() }
                     .keyboardShortcut("]", modifiers: [.command])
-                Button("Previous Tab") { router.previousTab() }
+                Button(tr("Previous Tab")) { router.previousTab() }
                     .keyboardShortcut("[", modifiers: [.command])
                 Divider()
-                Button(router.benchmarkOverlayPresented ? "Close Benchmark" : "Open Benchmark") {
+                Button(router.benchmarkOverlayPresented ? tr("Close Benchmark") : tr("Open Benchmark")) {
                     if router.benchmarkOverlayPresented {
                         router.closeBenchmark()
                     } else {
@@ -340,9 +377,9 @@ struct MTPLXApp: App {
                 }
                 .keyboardShortcut("b", modifiers: [.command])
                 Divider()
-                Button("Open Logs…") { router.presentLogs() }
+                Button(tr("Open Logs…")) { router.presentLogs() }
                     .keyboardShortcut("l", modifiers: [.command, .shift])
-                Button("Refresh") {
+                Button(tr("Refresh")) {
                     Task {
                         try? await backend.refreshStaticState()
                         try? await backend.refreshSnapshot()
@@ -351,13 +388,13 @@ struct MTPLXApp: App {
                 .keyboardShortcut("r", modifiers: [.command, .option])
             }
 
-            CommandMenu("Chat") {
-                Button("New Chat") {
+            CommandMenu(tr("Chat")) {
+                Button(tr("New Chat")) {
                     if router.primaryMode != .chat { router.showChat() }
                     _ = chatViewModel.createNewConversation()
                 }
                 .keyboardShortcut("n", modifiers: [.command])
-                Button(router.chatSidebarCollapsed ? "Show Sidebar" : "Hide Sidebar") {
+                Button(router.chatSidebarCollapsed ? tr("Show Sidebar") : tr("Hide Sidebar")) {
                     withAnimation(.smooth(duration: 0.22)) {
                         router.chatSidebarCollapsed.toggle()
                     }
@@ -365,16 +402,20 @@ struct MTPLXApp: App {
                 .keyboardShortcut("/", modifiers: [.command])
                 .disabled(router.primaryMode != .chat)
                 Divider()
-                Button("Toggle Web Search") {
+                Button(tr("Toggle Web Search")) {
                     chatViewModel.webSearchEnabled.toggle()
                 }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .disabled(chatViewModel.current == nil)
                 Divider()
-                Button("Stop Generating") {
+                // Its own shortcut, not Esc: the chat surface owns Esc
+                // (stop while streaming, close when idle — see
+                // ChatEscapePolicy), and two Esc bindings left the
+                // outcome to responder order.
+                Button(tr("Stop Generating")) {
                     Task { await chatViewModel.cancel() }
                 }
-                .keyboardShortcut(.escape, modifiers: [])
+                .keyboardShortcut(".", modifiers: [.command, .shift])
                 .disabled(!chatViewModel.isStreaming)
             }
         }

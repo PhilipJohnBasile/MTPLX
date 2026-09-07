@@ -250,11 +250,15 @@ extension PrefillState {
     /// returns `nil` and the gauge falls back to the percent + tokens
     /// caption.
     ///
-    /// Source preference: cumulative (`tokens_done / elapsed_s`,
-    /// converges to truth) → completion envelope `prefill_tok_s` →
-    /// `live_prefill_tok_s` (server-merged live rate) → per-chunk
-    /// (most spike-prone on cached restores, last resort).
+    /// Measured chunk work is the live speed, independent of earlier setup
+    /// and cache restore. The dial's scale must not reject a genuine rate
+    /// above its last tick. Retain the legacy filter only for unmeasured rates.
     func sanePrefillTokS(maxAxis: Double = 1500) -> Double? {
+        if let count = chunkSize, count > 0,
+           let elapsed = chunkElapsedS, elapsed.isFinite, elapsed > 0 {
+            let rate = Double(count) / elapsed
+            if rate.isFinite { return rate }
+        }
         // 1.2× the dial leaves a little headroom for legitimate
         // over-shoots without admitting the tokens-as-rate artefacts.
         let ceiling = maxAxis * 1.2
@@ -266,10 +270,10 @@ extension PrefillState {
             return value
         }
 
-        return sane(cumulativePrefillTokS)
-            ?? sane(prefillTokS)
-            ?? sane(livePrefillTokS)
+        return sane(livePrefillTokS)
             ?? sane(chunkPrefillTokS)
+            ?? sane(cumulativePrefillTokS)
+            ?? sane(prefillTokS)
     }
 
     var etaSeconds: Double? {
@@ -301,6 +305,12 @@ extension PrefillState {
     }
 
     var isActive: Bool { phase == "started" || phase == "chunk" }
+
+    /// Uncached prompt work this prefill has to do: the server's figure,
+    /// or total minus cached for a frame that omits it.
+    var newWorkTokens: Int {
+        newPrefillTokens ?? max(0, tokensTotal - (cachedTokens ?? 0))
+    }
 
     private func longContextAdjustedETA(
         elapsed: Double,
@@ -342,7 +352,7 @@ extension InFlightRequest {
 
     var promptDigest: String {
         let trimmed = promptPreview.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return "(empty prompt)" }
+        if trimmed.isEmpty { return tr("(empty prompt)") }
         if trimmed.count <= 64 { return trimmed }
         return String(trimmed.prefix(60)) + "…"
     }
@@ -371,13 +381,13 @@ enum DaemonStateKind: String {
 
     var label: String {
         switch self {
-        case .stopped: "Stopped"
-        case .starting: "Starting"
-        case .warming: "Warming"
-        case .running: "Running"
-        case .degraded: "Degraded"
-        case .stopping: "Stopping"
-        case .crashed: "Crashed"
+        case .stopped: tr("Stopped")
+        case .starting: tr("Starting")
+        case .warming: tr("Warming")
+        case .running: tr("Running")
+        case .degraded: tr("Degraded")
+        case .stopping: tr("Stopping")
+        case .crashed: tr("Crashed")
         }
     }
 
@@ -410,8 +420,45 @@ extension DaemonState {
     var detail: String? {
         switch self {
         case .degraded(let message): message
-        case .crashed(let status?): "exit \(status)"
+        case .crashed(let status?): tr("exit %@", String(status))
         default: nil
         }
+    }
+}
+
+// MARK: - Hero gauge prefill gate
+
+/// Decides when the hero gauge morphs to its prefill face.
+///
+/// Every prefill fires a `started` frame before the restore has run, so that
+/// frame reports the whole prompt as new work, and an agent's tool turns then
+/// re-prefill a few hundred cached-suffix tokens in well under a second. The
+/// dial used to morph prefill ↔ decode for each of them, faster than its
+/// 0.55 s morph could settle, and nothing on it could be read (Hermes tool
+/// loops, 2026-09-06). The gate keeps the decode face, which holds the last
+/// decode reading exactly as it does between requests, unless the prefill is
+/// expected to do at least `minimumNewTokens` of work: the frame's own
+/// new-token count once a chunk or the completion has reported it, and before
+/// that the prompt minus the resolved session's known prefix. A cold prompt, a
+/// file read or an edited history still shows as prefill from its first frame.
+/// No timer, no hold: a morph either happens at once or not at all.
+enum HeroPrefillGate {
+    /// About a second of prompt processing on an M5 Max, a few seconds on an
+    /// M1; short enough that a real prompt never hides, long enough that a
+    /// tool-result suffix never flickers.
+    static let minimumNewTokens = 1024
+
+    static func newWorkTokens(prefill: PrefillState, promptTokens: Int?, sessionPrefixLen: Int?) -> Int {
+        if prefill.phase != "started" { return prefill.newWorkTokens }
+        if let promptTokens, let sessionPrefixLen, sessionPrefixLen <= promptTokens {
+            return promptTokens - sessionPrefixLen
+        }
+        return prefill.newWorkTokens
+    }
+
+    static func showsPrefill(prefill: PrefillState, promptTokens: Int?, sessionPrefixLen: Int?) -> Bool {
+        prefill.isActive
+            && newWorkTokens(prefill: prefill, promptTokens: promptTokens, sessionPrefixLen: sessionPrefixLen)
+                >= minimumNewTokens
     }
 }

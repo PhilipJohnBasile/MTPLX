@@ -142,6 +142,31 @@ class _FastTime:
         return None
 
 
+def test_wait_for_auto_fans_polls_until_rows_report_auto(monkeypatch):
+    """The shared #201 verification (used by set_thermal_profile and the fan
+    sidecar) keeps polling through ramped and unreadable summaries and returns
+    True the moment every fan row is back on auto."""
+    summaries = iter([_RAMPED_SUMMARY, {"ok": False, "fans": []}, _AUTO_SUMMARY])
+    polled = {"n": 0}
+
+    def fake_summary():
+        polled["n"] += 1
+        return next(summaries)
+
+    monkeypatch.setattr(thermal, "fan_summary", fake_summary)
+    monkeypatch.setattr(thermal, "time", _FastTime())
+
+    assert thermal.wait_for_auto_fans(timeout_s=10.0) is True
+    assert polled["n"] == 3
+
+
+def test_wait_for_auto_fans_gives_up_at_the_deadline(monkeypatch):
+    monkeypatch.setattr(thermal, "fan_summary", lambda: _RAMPED_SUMMARY)
+    monkeypatch.setattr(thermal, "time", _FastTime())
+
+    assert thermal.wait_for_auto_fans(timeout_s=3.0) is False
+
+
 def test_set_thermal_profile_silent_falls_back_to_cli_without_daemon(monkeypatch):
     """With no daemon socket reachable (the autouse default), the reset uses the
     `auto` CLI candidates."""
@@ -691,40 +716,60 @@ def test_install_thermal_control_homebrew_alias_still_works(monkeypatch):
     assert thermal.install_thermal_control_homebrew is thermal.install_thermal_control
 
 
+def _is_sudo_install(command) -> bool:
+    return (
+        command
+        and command[0] == "sudo"
+        and "/bin/sh" in command
+        and thermal._PRIVILEGED_SUDOERS_SCRIPT in command
+    )
+
+
+def _is_security_install(command) -> bool:
+    return command[:3] == ["/usr/bin/security", "execute-with-privileges", "/bin/sh"]
+
+
+def _fake_probe_ok(command, *, timeout_s=None, cwd=None):
+    """visudo pre-check and the final `sudo -n ... status` verification both pass."""
+    return {"command": command, "returncode": 0, "ok": True, "stdout": "{}", "stderr": ""}
+
+
 def test_passwordless_sudoers_rule_uses_security_prompt_when_gui_sudo_fails(monkeypatch):
     invocations: list[list[str]] = []
 
     def fake_which(name):
         if name == "security":
             return "/usr/bin/security"
+        if name == "visudo":
+            return "/usr/sbin/visudo"
         return None
 
     def fake_subprocess_run(command, **kwargs):
         invocations.append(command)
-        if command == ["sudo", "tee", thermal.SUDOERS_FILE]:
+        if _is_sudo_install(command):
             return subprocess.CompletedProcess(
                 command,
                 1,
                 stdout="",
                 stderr="sudo: a terminal is required to read the password",
             )
-        if command[:3] == ["/usr/bin/security", "execute-with-privileges", "/bin/sh"]:
+        if _is_security_install(command):
+            # The privileged script receives the finished rule line, never
+            # the raw user name, so the escaping decided in Python is what
+            # lands on disk.
             assert command[-3:] == [
                 thermal.SUDOERS_FILE,
-                "testuser",
+                "testuser ALL=(root) NOPASSWD: /tmp/mtplx-bin/thermalforge",
                 "/tmp/mtplx-bin/thermalforge",
             ]
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         raise AssertionError(f"unexpected subprocess call: {command}")
 
-    def fake_probe(command, *, timeout_s=None):
-        assert command == ["sudo", "-n", "/tmp/mtplx-bin/thermalforge", "status"]
-        return {"command": command, "returncode": 0, "ok": True, "stdout": "{}", "stderr": ""}
-
     monkeypatch.setenv("USER", "testuser")
+    monkeypatch.setattr(thermal, "_stdin_is_tty", lambda: False)
     monkeypatch.setattr(thermal.shutil, "which", fake_which)
     monkeypatch.setattr(thermal.subprocess, "run", fake_subprocess_run)
-    monkeypatch.setattr(thermal, "_run_probe", fake_probe)
+    monkeypatch.setattr(thermal, "_run_probe", _fake_probe_ok)
 
     result = thermal.install_passwordless_sudoers_rule(
         binary_path="/tmp/mtplx-bin/thermalforge"
@@ -732,10 +777,11 @@ def test_passwordless_sudoers_rule_uses_security_prompt_when_gui_sudo_fails(monk
 
     assert result["ok"] is True, result
     assert result["method"] == "security_execute_with_privileges"
-    assert any(
-        command[:3] == ["/usr/bin/security", "execute-with-privileges", "/bin/sh"]
-        for command in invocations
-    )
+    assert any(_is_security_install(command) for command in invocations)
+    # Without a terminal the sudo attempt must be non-interactive so it can
+    # never sit on a password prompt nobody can see.
+    sudo_calls = [command for command in invocations if _is_sudo_install(command)]
+    assert sudo_calls and sudo_calls[0][1] == "-n", sudo_calls
 
 
 def test_passwordless_sudoers_rule_reports_security_prompt_failure(monkeypatch):
@@ -745,14 +791,14 @@ def test_passwordless_sudoers_rule_reports_security_prompt_failure(monkeypatch):
         return None
 
     def fake_subprocess_run(command, **kwargs):
-        if command == ["sudo", "tee", thermal.SUDOERS_FILE]:
+        if _is_sudo_install(command):
             return subprocess.CompletedProcess(
                 command,
                 1,
                 stdout="",
                 stderr="sudo: a terminal is required to read the password",
             )
-        if command[:3] == ["/usr/bin/security", "execute-with-privileges", "/bin/sh"]:
+        if _is_security_install(command):
             return subprocess.CompletedProcess(
                 command,
                 1,
@@ -762,16 +808,204 @@ def test_passwordless_sudoers_rule_reports_security_prompt_failure(monkeypatch):
         raise AssertionError(f"unexpected subprocess call: {command}")
 
     monkeypatch.setenv("USER", "testuser")
+    monkeypatch.setattr(thermal, "_stdin_is_tty", lambda: False)
     monkeypatch.setattr(thermal.shutil, "which", fake_which)
     monkeypatch.setattr(thermal.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(thermal, "_run_probe", _fake_probe_ok)
 
     result = thermal.install_passwordless_sudoers_rule(
         binary_path="/tmp/mtplx-bin/thermalforge"
     )
 
     assert result["ok"] is False
-    assert result["step"] == "sudo_tee"
+    assert result["step"] == "sudo_install"
     assert "macOS admin authorization failed" in result["message"]
+    # No terminal: the user is told where to type the password instead of
+    # being left with a command that appears to hang.
+    assert "Run `mtplx max --grant-sudo` in a terminal" in result["message"]
+
+
+# -- sudoers rule construction (C-15) -----------------------------------------
+
+
+def test_sudoers_rule_escapes_spaces_in_binary_path():
+    """A home on a volume with a space used to produce a rule whose command was
+    split at the space; visudo accepts that rule, so the install reported ok
+    while `sudo -n thermalforge max` was refused and fans never ramped."""
+    rule = thermal.sudoers_rule_for("testuser", "/Volumes/My Drive/.mtplx/bin/thermalforge")
+    assert rule == "testuser ALL=(root) NOPASSWD: /Volumes/My\\ Drive/.mtplx/bin/thermalforge"
+    # The other characters sudo's lexer accepts only when escaped.
+    rule = thermal.sudoers_rule_for("testuser", "/tmp/a=b,c:d#e/thermalforge")
+    assert rule == "testuser ALL=(root) NOPASSWD: /tmp/a\\=b\\,c\\:d\\#e/thermalforge"
+    # A plain path is written verbatim.
+    assert (
+        thermal.sudoers_rule_for("test.user-2", "/Users/test/.mtplx/bin/thermalforge")
+        == "test.user-2 ALL=(root) NOPASSWD: /Users/test/.mtplx/bin/thermalforge"
+    )
+
+
+@pytest.mark.parametrize(
+    "binary_path",
+    [
+        "/tmp/mtplx-bin/thermalforge\nroot ALL=(ALL) NOPASSWD: ALL",
+        "/tmp/mtplx-bin/thermal\rforge",
+        '/tmp/my "quoted" dir/thermalforge',
+        "/tmp/it's/thermalforge",
+        "/tmp/mtplx-bin/*",
+        "/tmp/mtplx-bin/thermalforge?",
+        "/tmp/[bin]/thermalforge",
+        "/tmp/back\\slash/thermalforge",
+        "/tmp/tab\tdir/thermalforge",
+        "relative/thermalforge",
+    ],
+)
+def test_sudoers_rule_rejects_unsafe_binary_paths(binary_path):
+    with pytest.raises(ValueError) as excinfo:
+        thermal.sudoers_rule_for("testuser", binary_path)
+    assert "sudoers rule" in str(excinfo.value) or "absolute" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("user", ["", "_unknown user", "-root", "%admin", "#0", "a,b", "bob\n"])
+def test_sudoers_rule_rejects_unsafe_user_names(user):
+    with pytest.raises(ValueError):
+        thermal.sudoers_rule_for(user, "/tmp/mtplx-bin/thermalforge")
+
+
+def test_install_passwordless_sudoers_rule_installs_nothing_when_visudo_rejects(monkeypatch):
+    """The rule is parsed on a temporary file we own before any privileged
+    call; a rejected rule ends the install with nothing written."""
+    privileged: list[list[str]] = []
+
+    def fake_probe(command, *, timeout_s=None, cwd=None):
+        if command[1:3] == ["-c", "-f"]:
+            assert command[-1] != thermal.SUDOERS_FILE
+            return {
+                "command": command,
+                "returncode": 1,
+                "ok": False,
+                "stdout": "",
+                "stderr": f"{command[-1]}:1:10: syntax error",
+            }
+        raise AssertionError(f"unexpected probe: {command}")
+
+    def fake_subprocess_run(command, **kwargs):
+        privileged.append(command)
+        raise AssertionError(f"privileged call must not run: {command}")
+
+    monkeypatch.setenv("USER", "testuser")
+    monkeypatch.setattr(thermal, "_run_probe", fake_probe)
+    monkeypatch.setattr(thermal.subprocess, "run", fake_subprocess_run)
+
+    result = thermal.install_passwordless_sudoers_rule(binary_path="/tmp/mtplx-bin/thermalforge")
+
+    assert result["ok"] is False
+    assert result["step"] == "visudo_check"
+    assert "nothing was installed" in result["message"]
+    assert "syntax error" in result["message"]
+    assert privileged == []
+
+
+def test_install_passwordless_sudoers_rule_refuses_unsafe_path_before_any_call(monkeypatch):
+    def fake_probe(command, *, timeout_s=None, cwd=None):
+        raise AssertionError(f"no command may run: {command}")
+
+    monkeypatch.setenv("USER", "testuser")
+    monkeypatch.setattr(thermal, "_run_probe", fake_probe)
+    monkeypatch.setattr(thermal.subprocess, "run", fake_probe)
+
+    result = thermal.install_passwordless_sudoers_rule(
+        binary_path="/tmp/mtplx-bin/thermalforge\nroot ALL=(ALL) NOPASSWD: ALL"
+    )
+
+    assert result["ok"] is False
+    assert result["step"] == "build_rule"
+    assert "cannot be written to a sudoers rule" in result["message"]
+
+
+def test_install_passwordless_sudoers_rule_defaults_to_the_binary_fan_commands_use(
+    monkeypatch, tmp_path
+):
+    """`mtplx max --grant-sudo` used to grant the PATH copy of thermalforge
+    (or /usr/local/bin/thermalforge) while fan control ran MTPLX's own copy in
+    ~/.mtplx/bin, so the grant never applied to the binary that needed it."""
+    bin_dir = tmp_path / "mtplx bin"
+    bin_dir.mkdir()
+    own = bin_dir / "thermalforge"
+    own.write_text("#!/bin/sh\nexit 0\n")
+    own.chmod(0o755)
+    monkeypatch.setattr(thermal, "MTPLX_THERMALFORGE_DIR", str(bin_dir))
+    monkeypatch.setattr(thermal, "MTPLX_THERMALFORGE_PATH", str(own))
+    monkeypatch.setattr(
+        thermal.shutil,
+        "which",
+        lambda name: "/usr/local/bin/thermalforge" if name == "thermalforge" else None,
+    )
+
+    sudo_calls: list[list[str]] = []
+
+    def fake_subprocess_run(command, **kwargs):
+        assert _is_sudo_install(command), command
+        assert "timeout" in kwargs and kwargs["timeout"], "sudo must be bounded"
+        sudo_calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setenv("USER", "testuser")
+    monkeypatch.setattr(thermal, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(thermal.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(thermal, "_run_probe", _fake_probe_ok)
+
+    result = thermal.install_passwordless_sudoers_rule()
+
+    assert result["ok"] is True, result
+    assert result["method"] == "sudo"
+    assert result["binary_path"] == str(own)
+    assert result["rule"] == f"testuser ALL=(root) NOPASSWD: {tmp_path}/mtplx\\ bin/thermalforge"
+    # Interactive terminal: plain `sudo` (may prompt), the script gets the
+    # escaped rule and the raw path it must find executable.
+    assert len(sudo_calls) == 1
+    assert sudo_calls[0][1] == "/bin/sh"
+    assert sudo_calls[0][-3:] == [thermal.SUDOERS_FILE, result["rule"], str(own)]
+
+
+def test_install_passwordless_sudoers_rule_reports_missing_thermalforge(monkeypatch):
+    monkeypatch.setattr(thermal, "_find_thermalforge", lambda: None)
+    monkeypatch.setattr(
+        thermal.subprocess, "run", lambda *a, **k: pytest.fail("no command may run")
+    )
+
+    result = thermal.install_passwordless_sudoers_rule()
+
+    assert result["ok"] is False
+    assert result["step"] == "locate_thermalforge"
+    assert "mtplx max --install" in result["message"]
+
+
+def test_install_passwordless_sudoers_rule_sudo_timeout_is_reported(monkeypatch):
+    def fake_which(name):
+        if name == "security":
+            return "/usr/bin/security"
+        return None
+
+    def fake_subprocess_run(command, **kwargs):
+        if _is_sudo_install(command):
+            raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+        if _is_security_install(command):
+            return subprocess.CompletedProcess(
+                command, 1, stdout="", stderr="The user canceled authorization."
+            )
+        raise AssertionError(f"unexpected subprocess call: {command}")
+
+    monkeypatch.setenv("USER", "testuser")
+    monkeypatch.setattr(thermal, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(thermal.shutil, "which", fake_which)
+    monkeypatch.setattr(thermal.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(thermal, "_run_probe", _fake_probe_ok)
+
+    result = thermal.install_passwordless_sudoers_rule(binary_path="/tmp/mtplx-bin/thermalforge")
+
+    assert result["ok"] is False
+    assert result["step"] == "sudo_install"
+    assert "did not finish within" in result["message"]
 
 
 def test_fan_summary_parses_thermalforge_status_json(monkeypatch):

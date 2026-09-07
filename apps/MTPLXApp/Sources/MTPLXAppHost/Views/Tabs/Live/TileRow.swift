@@ -146,7 +146,6 @@ struct TileRow: View {
         let liveRolling = hasRealRequest ? rolling : nil
         let liveLatest = hasRealRequest ? latest : nil
         let liveSmoothed = hasRealRequest ? smoothed : SmoothedMetrics()
-        let liveSnapshot = hasRealRequest ? snapshot : nil
 
         // `lifted` is true only once the daemon has actually reached
         // `.running` — `.starting` and `.warming` keep the row flat
@@ -160,14 +159,14 @@ struct TileRow: View {
 
         let specs: [TileSpec] = [
             TileSpec(
-                label: "Context",
+                label: tr("Context"),
                 value: contextValue(machine: machine),
                 systemImage: "text.alignleft",
                 caption: contextCaption(lifetime: liveLifetime),
                 liftIndex: 0
             ),
             TileSpec(
-                label: "Cached",
+                label: tr("Cached"),
                 value: cacheValue(
                     smoothed: liveSmoothed,
                     latest: liveLatest,
@@ -184,7 +183,7 @@ struct TileRow: View {
                 liftIndex: 1
             ),
             TileSpec(
-                label: "Memory",
+                label: tr("Memory"),
                 value: memoryValue(mem: mem),
                 unit: memoryUnit(machine: machine),
                 systemImage: "memorychip",
@@ -197,19 +196,19 @@ struct TileRow: View {
                 liftIndex: 2
             ),
             TileSpec(
-                label: "5-min Min/Max",
+                label: tr("5-min Min/Max"),
                 value: minMaxValue(rolling: liveRolling),
                 unit: "TPS",
                 systemImage: "chart.bar.xaxis",
-                caption: liveRolling?.mean.map { "avg \(Format.tps($0))" },
+                caption: liveRolling?.mean.map { tr("avg %@", Format.tps($0)) },
                 liftIndex: 3
             ),
             TileSpec(
-                label: "Avg Prefill",
-                value: avgPrefillValue(snapshot: liveSnapshot, latest: liveLatest),
+                label: tr("Avg Prefill"),
+                value: Format.tps(snapshot?.prefillRates?.averageTokS),
                 unit: "TPS",
                 systemImage: "gauge.with.dots.needle.bottom.50percent",
-                caption: avgPrefillCaption(snapshot: liveSnapshot, latest: liveLatest),
+                caption: snapshot?.prefillRates?.peakTokS.map { tr("peak %@", Format.tps($0)) },
                 liftIndex: 4
             ),
         ]
@@ -272,7 +271,7 @@ struct TileRow: View {
     /// a misleading max.
     ///
     /// The "current" signal cascades through the freshest source:
-    ///   1. Any in-flight request's prompt token count.
+    ///   1. Any in-flight request's prompt plus generated token count.
     ///   2. The largest prefix length across active engine sessions
     ///      (covers the read-only "between requests, last chat is
     ///      still loaded" case).
@@ -287,8 +286,8 @@ struct TileRow: View {
     }
 
     private func currentContextTokens() -> Int {
-        if let inFlightPrompt = backend.inFlight.lazy.compactMap(\.promptTokens).max() {
-            return inFlightPrompt
+        if let inFlightContext = backend.inFlight.lazy.compactMap(\.contextTokens).max() {
+            return inFlightContext
         }
         if let sessions = backend.sessions?.sessions, !sessions.isEmpty {
             return sessions.map(\.prefixLen).max() ?? 0
@@ -298,7 +297,7 @@ struct TileRow: View {
 
     private func contextCaption(lifetime: LifetimeSnapshot?) -> String? {
         guard let lifetime else { return nil }
-        return "lifetime \(Format.compactTokens(lifetime.tokensTotal)) tok"
+        return tr("lifetime %@ tok", Format.compactTokens(lifetime.tokensTotal))
     }
 
     // MARK: Computed helpers
@@ -333,7 +332,7 @@ struct TileRow: View {
     ) -> String? {
         if latest?.sessionCacheHit == true {
             if let total = lifetime?.cachedTokensTotal, total > 0 {
-                return "hit · total \(Format.integer(total)) tok"
+                return tr("hit · total %@ tok", Format.integer(total))
             }
             return "hit"
         }
@@ -341,13 +340,13 @@ struct TileRow: View {
             let source = sessionBank?.lastEffectiveCacheSource ?? "cache"
             let hits = sessionBank?.restoreHitCount ?? 0
             if hits > 0 {
-                return "\(source) hit"
+                return tr("%@ hit", source)
             }
-            return "\(source) hit"
+            return tr("%@ hit", source)
         }
         if let total = lifetime?.tokensTotal, let cached = lifetime?.cachedTokensTotal, total > 0 {
             let rate = Double(cached) / Double(total)
-            return "rate \(Format.percent(rate))"
+            return tr("rate %@", Format.percent(rate))
         }
         return "miss"
     }
@@ -375,50 +374,15 @@ struct TileRow: View {
         // The raw (unclamped) percentage stays — 129% is a receipt, not a
         // rendering bug — but past 100% or under pressure the caption says
         // what it means instead of leaving the user to guess (#305).
-        let base = "\(Format.percent(pct, fractionDigits: 0)) used"
-        if pressureLevel >= 4 { return base + " · critical pressure" }
+        let base = tr("%@ used", Format.percent(pct, fractionDigits: 0))
+        if pressureLevel >= 4 { return base + tr(" · critical pressure") }
         // Same contract as the banner (605a1006): a shed claim requires an
         // actual shed in the guard ring, never pressure level alone.
         if pressureLevel >= 2 {
-            return base + (recentShed ? " · pressure, shedding cache" : " · memory pressure")
+            return base + (recentShed ? tr(" · pressure, shedding cache") : tr(" · memory pressure"))
         }
-        if pct > 1.0 { return base + " · over budget" }
+        if pct > 1.0 { return base + tr(" · over budget") }
         return base
     }
 
-    // MARK: Average prefill tile
-    //
-    // Replaces the old "Depth" tile, which only echoed the depth the
-    // user already set in Settings. Prefill throughput is the metric
-    // the user actually cares about here: how fast the model ingests
-    // the prompt. The headline is the mean prefill rate across recent
-    // completed requests; the caption shows the peak so a single fast
-    // cache-warm read doesn't read as the steady rate.
-
-    private func avgPrefillValue(snapshot: DashboardSnapshot?, latest: MetricsLatest?) -> String {
-        let samples = prefillSamples(snapshot: snapshot, latest: latest)
-        guard !samples.isEmpty else { return "—" }
-        let avg = samples.reduce(0, +) / Double(samples.count)
-        return Format.tps(avg)
-    }
-
-    private func avgPrefillCaption(snapshot: DashboardSnapshot?, latest: MetricsLatest?) -> String? {
-        let samples = prefillSamples(snapshot: snapshot, latest: latest)
-        guard let peak = samples.max() else { return nil }
-        return "peak \(Format.tps(peak))"
-    }
-
-    /// Positive, finite prefill-rate samples from recent completed
-    /// requests, falling back to the freshest single reading when the
-    /// recent buffer is empty.
-    private func prefillSamples(snapshot: DashboardSnapshot?, latest: MetricsLatest?) -> [Double] {
-        let recent = (snapshot?.recent ?? [])
-            .compactMap(\.prefillTokS)
-            .filter { $0 > 0 && $0.isFinite }
-        if !recent.isEmpty { return recent }
-        if let single = latest?.prefillTokS, single > 0, single.isFinite {
-            return [single]
-        }
-        return []
-    }
 }

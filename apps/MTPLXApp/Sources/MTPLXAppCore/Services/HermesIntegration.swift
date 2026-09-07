@@ -453,7 +453,7 @@ public struct HermesInstallStatus: Equatable, Sendable {
             capabilitySummary: HermesIntegration.capabilitySummary,
             integrationSummaries: integrationSummaries,
             warnings: warnings,
-            detail: versionSummary ?? "Hermes is ready.",
+            detail: versionSummary ?? tr("Hermes is ready."),
             updateCommand: updateSummary == nil ? nil : "hermes update"
         )
     }
@@ -470,7 +470,7 @@ public struct HermesInstallStatus: Equatable, Sendable {
             capabilitySummary: HermesIntegration.capabilitySummary,
             integrationSummaries: [],
             warnings: [],
-            detail: "Hermes is not on PATH.",
+            detail: tr("Hermes is not on PATH."),
             updateCommand: "pip install -U hermes-agent[web,pty]"
         )
     }
@@ -565,15 +565,15 @@ public enum HermesIntegrationError: Error, Equatable, LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .executableNotFound:
-            return "Hermes is not installed or not on PATH."
+            return tr("Hermes is not installed or not on PATH.")
         case .incompatible(let detail):
             return detail
         case .launchFailed(let detail):
-            return "Hermes could not start: \(detail)"
+            return tr("Hermes could not start: %@", detail)
         case .dashboardTokenTimeout:
-            return "Hermes dashboard started, but the session token never appeared."
+            return tr("Hermes dashboard started, but the session token never appeared.")
         case .profileCreateFailed(let detail):
-            return "Hermes profile could not be created: \(detail)"
+            return tr("Hermes profile could not be created: %@", detail)
         }
     }
 }
@@ -732,7 +732,7 @@ public struct HermesIntegration: Sendable {
         return .incompatible(
             executablePath: executable.path,
             versionSummary: versionSummary,
-            detail: "Hermes must expose the chat command before MTPLX can launch it."
+            detail: tr("Hermes must expose the chat command before MTPLX can launch it.")
         )
     }
 
@@ -838,16 +838,30 @@ public struct HermesIntegration: Sendable {
         // not own (memory/providers/delegation/…), so the template is merged
         // over the existing file instead: app-owned keys are rewritten, all
         // other content is preserved byte-for-byte.
-        let existingConfigText = try? String(contentsOf: configURL, encoding: .utf8)
+        let existingConfigText = FileManager.default.fileExists(atPath: configURL.path)
+            ? try String(contentsOf: configURL, encoding: .utf8) : nil
+        var seededConfigText = existingConfigText
+        if !Self.profileDeclaresTerminalBackend(existingConfigText) {
+            // The root config is read only when a terminal policy has to be
+            // inherited (#460): a profile with its own backend never depends
+            // on it, so an unreadable root cannot fail that profile's launch.
+            // When inheritance is needed, an unreadable root is a thrown
+            // error rather than a silently dropped sandbox choice.
+            let rootConfigURL = hermesHome.appendingPathComponent("config.yaml")
+            let rootConfigText = FileManager.default.fileExists(atPath: rootConfigURL.path)
+                ? try String(contentsOf: rootConfigURL, encoding: .utf8) : nil
+            seededConfigText = Self.inheritTerminalConfig(existing: existingConfigText, root: rootConfigText)
+        }
         let configText = Self.mergedConfigYAML(
-            existing: existingConfigText,
+            existing: seededConfigText,
             template: Self.configYAML(
                 modelID: modelID,
                 baseURL: baseURL,
                 apiKey: apiKey,
                 workspacePath: workspacePath,
                 showReasoning: reasoning != "off",
-                reasoningEffort: reasoningEffort
+                reasoningEffort: reasoningEffort,
+                vision: MTPLXModelOption.supportsVision(model: configuration.model)
             )
         )
         let envText = Self.dotenv(
@@ -1036,7 +1050,7 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "could not sync Hermes profile: \(error)"
+                detail: tr("could not sync Hermes profile: %@", String(describing: error))
             )
         }
         guard isCurrent?() ?? true else { return staleHandoffResult(command: command) }
@@ -1047,7 +1061,7 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "could not pin Hermes Desktop to the MTPLX profile: \(error)"
+                detail: tr("could not pin Hermes Desktop to the MTPLX profile: %@", String(describing: error))
             )
         }
         guard isCurrent?() ?? true else { return staleHandoffResult(command: command) }
@@ -1089,7 +1103,7 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "Hermes handoff cancelled because the daemon lifecycle changed.",
+                detail: tr("Hermes handoff cancelled because the daemon lifecycle changed."),
                 launchedProcessIDs: desktopHandoffIdentity.map { [$0.processID] } ?? [],
                 desktopHandoffIdentity: desktopHandoffIdentity
             )
@@ -1098,19 +1112,19 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "could not open Hermes Desktop at \(appURL.path)"
+                detail: tr("could not open Hermes Desktop at %@", appURL.path)
             )
         }
         let previousNote: String
         if let previous, previous != Self.profileName {
-            previousNote = " (was \(previous); the in-app profile picker switches back)"
+            previousNote = tr(" (was %@; the in-app profile picker switches back)", previous)
         } else {
             previousNote = ""
         }
         return HermesLaunchResult(
             action: .launched,
             command: command,
-            detail: "opened Hermes Desktop pinned to profile \(Self.profileName)\(previousNote)",
+            detail: tr("opened Hermes Desktop pinned to profile %@%@", Self.profileName, previousNote),
             launchedProcessIDs: desktopHandoffIdentity.map { [$0.processID] } ?? [],
             desktopHandoffIdentity: desktopHandoffIdentity
         )
@@ -1146,7 +1160,7 @@ public struct HermesIntegration: Sendable {
         return HermesLaunchResult(
             action: terminal.action,
             command: terminal.command,
-            detail: "\(desktop.detail); fell back to Terminal: \(terminal.detail)",
+            detail: tr("%@; fell back to Terminal: %@", desktop.detail, terminal.detail),
             launchedProcessIDs: terminal.launchedProcessIDs,
             terminalHandoffLease: terminal.terminalHandoffLease,
             desktopHandoffIdentity: terminal.desktopHandoffIdentity
@@ -1167,7 +1181,7 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: Self.launchCommand(for: configuration.model),
-                detail: "could not sync Hermes profile: \(error)"
+                detail: tr("could not sync Hermes profile: %@", String(describing: error))
             )
         }
 
@@ -1177,7 +1191,7 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: Self.launchCommand(for: configuration.model),
-                detail: "Hermes is not installed or not on PATH."
+                detail: tr("Hermes is not installed or not on PATH.")
             )
         }
 
@@ -1201,7 +1215,7 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "could not prepare Hermes terminal command: \(error)"
+                detail: tr("could not prepare Hermes terminal command: %@", String(describing: error))
             )
         }
 
@@ -1231,7 +1245,7 @@ public struct HermesIntegration: Sendable {
                 return HermesLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: "could not open Hermes automatically: open timed out after 30s and was terminated"
+                    detail: tr("could not open Hermes automatically: open timed out after 30s and was terminated")
                 )
             }
             guard process.terminationStatus == 0 else {
@@ -1242,8 +1256,8 @@ public struct HermesIntegration: Sendable {
                     action: .unavailable,
                     command: command,
                     detail: message.isEmpty
-                        ? "could not open Hermes automatically: open exited \(process.terminationStatus)"
-                        : "could not open Hermes automatically: \(message)"
+                        ? tr("could not open Hermes automatically: open exited %@", String(process.terminationStatus))
+                        : tr("could not open Hermes automatically: %@", message)
                 )
             }
             let receipt = await MTPLXTerminalHandoffLease.awaitReceipt(
@@ -1270,7 +1284,7 @@ public struct HermesIntegration: Sendable {
                 return HermesLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: "Hermes Terminal did not report its launch receipt."
+                    detail: tr("Hermes Terminal did not report its launch receipt.")
                 )
             }
             guard isCurrent?() ?? true else {
@@ -1278,7 +1292,7 @@ public struct HermesIntegration: Sendable {
                 return HermesLaunchResult(
                     action: .unavailable,
                     command: command,
-                    detail: "Hermes handoff cancelled because the daemon lifecycle changed.",
+                    detail: tr("Hermes handoff cancelled because the daemon lifecycle changed."),
                     launchedProcessIDs: [lease.processID],
                     terminalHandoffLease: lease
                 )
@@ -1286,7 +1300,7 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .launched,
                 command: command,
-                detail: "opened Hermes in Terminal",
+                detail: tr("opened Hermes in Terminal"),
                 launchedProcessIDs: [lease.processID],
                 terminalHandoffLease: lease
             )
@@ -1295,14 +1309,14 @@ public struct HermesIntegration: Sendable {
             return HermesLaunchResult(
                 action: .unavailable,
                 command: command,
-                detail: "could not open Hermes automatically: \(error)"
+                detail: tr("could not open Hermes automatically: %@", String(describing: error))
             )
         }
         #else
         return HermesLaunchResult(
             action: .unavailable,
             command: command,
-            detail: "automatic Hermes launch currently requires macOS Terminal"
+            detail: tr("automatic Hermes launch currently requires macOS Terminal")
         )
         #endif
     }
@@ -1457,7 +1471,8 @@ public struct HermesIntegration: Sendable {
         apiKey: String,
         workspacePath: String,
         showReasoning: Bool,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        vision: Bool
     ) -> String {
         // SYNC PAIR: public.py _hermes_config_yaml — both writers must emit
         // the same template shape or the shared merge sweeps each other's
@@ -1466,7 +1481,10 @@ public struct HermesIntegration: Sendable {
         // server branch (tool contract, managed-thinking carve-out,
         // injected-cap strip) is dead. Reasoning effort must sit under
         // agent: — hermes reads CLI_CONFIG["agent"]["reasoning_effort"]; a
-        // model.reasoning_effort line is silently ignored.
+        // model.reasoning_effort line is silently ignored. terminal.backend
+        // is deliberately absent: it is the user's sandbox choice (hermes
+        // defaults it to local) and the merge preserves a user-set value
+        // (issue #460).
         let effortLine = reasoningEffort.map { "  reasoning_effort: \(yamlQuote($0))\n" } ?? ""
         let showReasoningText = showReasoning ? "true" : "false"
         return """
@@ -1476,6 +1494,8 @@ public struct HermesIntegration: Sendable {
           base_url: \(yamlQuote(baseURL))
           api_key: \(yamlQuote(apiKey))
           api_mode: chat_completions
+          supports_vision: \(vision ? "true" : "false")
+          reasoning_echo: true
           default_headers:
             x-mtplx-client: hermes
         toolsets:
@@ -1490,10 +1510,11 @@ public struct HermesIntegration: Sendable {
           tool_use_enforcement: auto
         """ + "\n" + effortLine + """
         terminal:
-          backend: local
           cwd: \(yamlQuote(workspacePath))
           timeout: 180
           persistent_shell: true
+        compression:
+          tool_image_retention: until_compaction
         display:
           streaming: true
           show_reasoning: \(showReasoningText)
@@ -1544,6 +1565,29 @@ public struct HermesIntegration: Sendable {
     /// The child-key scan assumes the template's own two-space indentation,
     /// which is what the app has always written; user files started from our
     /// template keep that shape.
+    /// Inherit the root execution policy only when the profile has no backend.
+    /// Provider credentials and other root sections stay outside this profile.
+    /// True when the profile config sets `terminal.backend` itself.
+    static func profileDeclaresTerminalBackend(_ existing: String?) -> Bool {
+        guard let terminal = parseTopLevelBlocks(existing ?? "").blocks
+            .first(where: { $0.keyName == "terminal" }) else { return false }
+        return directChildBlocks(of: terminal).contains(where: { $0.key == "backend" })
+    }
+
+    static func inheritTerminalConfig(existing: String?, root: String?) -> String? {
+        guard let root, !profileDeclaresTerminalBackend(existing) else { return existing }
+        guard let terminal = parseTopLevelBlocks(root).blocks.first(where: { $0.keyName == "terminal" }) else {
+            return existing
+        }
+        let body = Array(terminal.lines.dropFirst())
+        let indent = body.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { $0.prefix(while: { $0 == " " }).count }.min() ?? 0
+        let normalized = body.map { $0.isEmpty ? "" : "  " + $0.dropFirst(indent) }
+        let seed = ([terminal.lines[0]] + normalized).joined(separator: "\n") + "\n"
+        guard let existing, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return seed }
+        return mergedConfigYAML(existing: seed, template: existing)
+    }
+
     static func mergedConfigYAML(existing: String?, template: String) -> String {
         guard
             let existing,
@@ -1695,7 +1739,11 @@ public struct HermesIntegration: Sendable {
         TERMINAL_CWD=\(dotenvQuote(workspacePath))
         """
         if let reasoningEffort {
-            text += "HERMES_MTPLX_REASONING_EFFORT=\(dotenvQuote(reasoningEffort))\n"
+            // The literal above ends without a newline: appending straight
+            // onto it fused TERMINAL_CWD and this key into one line, which
+            // Hermes' dotenv parser rejected ("could not parse statement"),
+            // silently dropping both the working directory and the effort.
+            text += "\nHERMES_MTPLX_REASONING_EFFORT=\(dotenvQuote(reasoningEffort))"
         }
         if !bridgeText.isEmpty {
             text += "\n" + bridgeText
@@ -1900,25 +1948,25 @@ public struct HermesIntegration: Sendable {
 
         var warnings: [String] = []
         if String(data: data, encoding: .utf8) == nil {
-            warnings.append("Hermes root .env has invalid UTF-8; some Hermes status/tools commands may fail.")
+            warnings.append(tr("Hermes root .env has invalid UTF-8; some Hermes status/tools commands may fail."))
         }
         let text = String(decoding: data, as: UTF8.self)
         var configured: [String] = []
         if Self.dotenvHasValue("TELEGRAM_BOT_TOKEN", in: text) {
             configured.append(
                 Self.dotenvHasValue("TELEGRAM_HOME_CHANNEL", in: text)
-                    ? "Telegram configured with a home channel."
-                    : "Telegram configured; no home channel set."
+                    ? tr("Telegram configured with a home channel.")
+                    : tr("Telegram configured; no home channel set.")
             )
         }
         if Self.dotenvHasValue("DISCORD_BOT_TOKEN", in: text) {
-            configured.append("Discord configured.")
+            configured.append(tr("Discord configured."))
         }
         if Self.dotenvHasValue("SLACK_BOT_TOKEN", in: text) {
-            configured.append("Slack configured.")
+            configured.append(tr("Slack configured."))
         }
         if Self.dotenvValue("WHATSAPP_ENABLED", in: text)?.lowercased() == "true" {
-            configured.append("WhatsApp enabled.")
+            configured.append(tr("WhatsApp enabled."))
         }
 
         return LocalMessagingStatus(
@@ -1959,16 +2007,16 @@ public struct HermesIntegration: Sendable {
         guard !text.isEmpty else { return nil }
         var parts: [String] = []
         if text.localizedCaseInsensitiveContains("Gateway service is loaded") {
-            parts.append("Gateway service loaded")
+            parts.append(tr("Gateway service loaded"))
         }
         if let pid = launchctlValue("PID", in: text) {
-            parts.append("PID \(pid)")
+            parts.append(tr("PID %@", pid))
         }
         if text.localizedCaseInsensitiveContains("stale relative") {
-            parts.append("service definition stale")
+            parts.append(tr("service definition stale"))
         }
         if text.localizedCaseInsensitiveContains("not loaded") {
-            parts.append("Gateway service not loaded")
+            parts.append(tr("Gateway service not loaded"))
         }
         if parts.isEmpty {
             return text
@@ -2001,10 +2049,10 @@ public struct HermesIntegration: Sendable {
         guard !text.isEmpty else { return [] }
         var warnings: [String] = []
         if text.localizedCaseInsensitiveContains("stale relative") {
-            warnings.append("Hermes Gateway LaunchAgent is stale; run `hermes gateway start` before relying on messaging.")
+            warnings.append(tr("Hermes Gateway LaunchAgent is stale; run `hermes gateway start` before relying on messaging."))
         }
         if text.localizedCaseInsensitiveContains("not loaded") {
-            warnings.append("Hermes Gateway is not loaded; run `hermes gateway start` before using messaging.")
+            warnings.append(tr("Hermes Gateway is not loaded; run `hermes gateway start` before using messaging."))
         }
         return warnings
     }
@@ -2015,7 +2063,7 @@ public struct HermesIntegration: Sendable {
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !lines.isEmpty else {
-            return "Hermes Gateway start command completed."
+            return tr("Hermes Gateway start command completed.")
         }
         if let loaded = lines.first(where: { $0.localizedCaseInsensitiveContains("loaded") }) {
             return loaded
@@ -2254,7 +2302,7 @@ public struct HermesIntegration: Sendable {
         HermesLaunchResult(
             action: .unavailable,
             command: command,
-            detail: "Hermes handoff cancelled because the daemon lifecycle changed."
+            detail: tr("Hermes handoff cancelled because the daemon lifecycle changed.")
         )
     }
 
