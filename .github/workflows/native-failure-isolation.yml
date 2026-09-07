@@ -7,7 +7,7 @@ permissions: {contents: read}
 jobs:
   isolate:
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with: {path: audit, persist-credentials: false}
@@ -15,7 +15,7 @@ jobs:
         with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
-      - name: Install runtime and compile source-level diagnostics
+      - name: Install runtime and compile exact candidate
         working-directory: source
         run: |
           mkdir -p ../receipts
@@ -27,30 +27,23 @@ jobs:
           git diff -- apps/MTPLXApp > ../receipts/native.patch
           swift --version > ../receipts/swift-version.txt
           swift test --package-path apps/MTPLXApp list > ../receipts/test-list.log 2>&1
-      - name: Run fixture checks and capture crash stack under LLDB
+      - name: Capture startup crash stack under LLDB
         working-directory: source
         run: |
           python3 - <<'PY'
           import pathlib,subprocess,os,json
           framework=next(pathlib.Path('apps/MTPLXApp/.build').rglob('Sparkle.framework'))
           env=dict(os.environ,DYLD_FRAMEWORK_PATH=str(framework.parent.resolve()),NSUnbufferedIO='YES')
-          names=['testBackendHeadlineDecodeUsesRawCompletionTPSBeforeDisplayTPS','testBackendHeadlineDecodeIgnoresCumulativeAndStaleSnapshotMaxDuringLiveRequest']
-          results=[]
-          for name in names:
-              with open('../receipts/'+name+'.log','w') as log:
-                  result=subprocess.run(['swift','test','--skip-build','--package-path','apps/MTPLXApp','--filter',name],env=env,stdout=log,stderr=subprocess.STDOUT,timeout=45)
-              results.append({'test':name,'exit':result.returncode})
           bundle=next(pathlib.Path('apps/MTPLXApp/.build').rglob('MTPLXAppPackageTests.xctest')).resolve()
           xctest=subprocess.check_output(['xcrun','--find','xctest'],text=True).strip()
-          command=['lldb','--batch','-o','run','-o','thread backtrace all','--',xctest,'-XCTest','MTPLXAppCoreTests.MTPLXAppCoreTests/testCancelDuringStartupLeavesAppStoppedAndRestoresFans',str(bundle)]
+          command=['lldb','--batch','-o','run','-k','thread backtrace all','-k','image list','--',xctest,'-XCTest','MTPLXAppCoreTests.MTPLXAppCoreTests/testCancelDuringStartupLeavesAppStoppedAndRestoresFans',str(bundle)]
           with open('../receipts/startup-lldb.log','w') as log:
               try:
                   result=subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT,timeout=90)
                   code=result.returncode
               except subprocess.TimeoutExpired:code='timeout'
-          results.append({'test':'startup-under-lldb','exit':code})
-          pathlib.Path('../receipts/results.json').write_text(json.dumps(results,indent=2))
-          print(json.dumps(results,indent=2))
+          pathlib.Path('../receipts/results.json').write_text(json.dumps({'debugger_exit':code,'scope':'Diagnostic capture only. Debugger exit zero is not a passing test.'},indent=2))
+          print(pathlib.Path('../receipts/startup-lldb.log').read_text()[-30000:])
           PY
       - uses: actions/upload-artifact@v4
         if: always()
