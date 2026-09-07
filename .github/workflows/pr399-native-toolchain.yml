@@ -1,0 +1,60 @@
+name: PR 399 Swift 6.1 startup validation
+on:
+  push:
+    branches: [codex/pr399-native-validation-20260907]
+    paths: [.github/workflows/pr399-native-toolchain.yml]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: github.repository == 'PhilipJohnBasile/MTPLX'
+    runs-on: macos-15
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: baseline
+            source: f47c18dc
+          - label: direct-default-probes
+            source: d27c8963
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.source }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Record source and toolchain; install runtime
+        run: |
+          mkdir -p native-receipts
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          git rev-parse HEAD > native-receipts/source.txt
+          swift --version > native-receipts/swift-version.txt
+          python -m pip install -q -e '.[dev,server]'
+          mtplx --version > native-receipts/runtime-version.txt
+      - name: Build native app and test targets
+        run: |
+          set -o pipefail
+          swift build --package-path apps/MTPLXApp --build-tests 2>&1 | tee native-receipts/build.log
+      - name: Startup cancellation regression
+        run: |
+          set -o pipefail
+          framework=$(find apps/MTPLXApp/.build -name Sparkle.framework -type d | head -1)
+          if [ -n "$framework" ]; then export DYLD_FRAMEWORK_PATH="$(dirname "$framework")"; fi
+          swift test --package-path apps/MTPLXApp --skip-build --filter testCancelDuringStartupLeavesAppStoppedAndRestoresFans 2>&1 | tee native-receipts/startup.log
+          grep -q 'Executed 1 test, with 0 failures' native-receipts/startup.log
+      - name: Complete native suite
+        run: |
+          set -o pipefail
+          framework=$(find apps/MTPLXApp/.build -name Sparkle.framework -type d | head -1)
+          if [ -n "$framework" ]; then export DYLD_FRAMEWORK_PATH="$(dirname "$framework")"; fi
+          swift test --package-path apps/MTPLXApp --skip-build 2>&1 | tee native-receipts/tests.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pr399-${{ matrix.label }}
+          path: native-receipts/
+          retention-days: 14
+          if-no-files-found: error
