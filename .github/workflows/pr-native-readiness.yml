@@ -2,7 +2,7 @@ name: Integrated MTPLX native readiness
 on:
   push:
     branches: [codex/pr-review-audit-20260906]
-    paths: [.github/workflows/pr-native-readiness.yml]
+    paths: [.github/workflows/pr-native-readiness.yml, .review/native_fixes.py]
 permissions:
   contents: read
 jobs:
@@ -12,43 +12,32 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: 48b18fc443688000f39406a47c8b634c5451b726
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Integrate exact current main and fix schema value lifetime
+        with: {path: audit, persist-credentials: false}
+      - uses: actions/checkout@v4
+        with: {ref: 48b18fc443688000f39406a47c8b634c5451b726, path: source, fetch-depth: 0, persist-credentials: false}
+      - name: Integrate exact current main and scoped SDK fixes
+        working-directory: source
         run: |
-          mkdir -p /tmp/native-receipts
+          mkdir -p ../native-receipts
           git config user.name 'Source validation'
           git config user.email 'validation@example.invalid'
           git fetch --no-tags https://github.com/youssofal/MTPLX.git 21be78b3f51820eecef020e5e4855c0715eaf9a5
           git merge --no-commit --no-ff 21be78b3f51820eecef020e5e4855c0715eaf9a5
           test -z "$(git diff --name-only --diff-filter=U)"
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('apps/MTPLXApp/Sources/MTPLXAppCore/Persistence/ChatModels.swift')
-          s=p.read_text();old='    public static let versionIdentifier = Schema.Version(1, 0, 0)'
-          new='''    // Some supported SDKs do not mark Schema.Version Sendable. Return a
-              // fresh immutable version instead of sharing non-Sendable storage.
-              public static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }'''
-          assert s.count(old)==1
-          p.write_text(s.replace(old,new))
-          PY
+          python3 ../audit/.review/native_fixes.py .
           git diff --check
-          git diff -- apps/MTPLXApp/Sources/MTPLXAppCore/Persistence/ChatModels.swift > /tmp/native-receipts/schema.patch
-          swift --version > /tmp/native-receipts/swift-version.txt
+          git diff -- apps/MTPLXApp > ../native-receipts/native.patch
+          swift --version > ../native-receipts/swift-version.txt
       - name: Build the native app
+        working-directory: source
         run: |
           set -o pipefail
-          swift build --package-path apps/MTPLXApp --product MTPLXApp 2>&1 | tee /tmp/native-receipts/build.log
+          swift build --package-path apps/MTPLXApp --product MTPLXApp 2>&1 | tee ../native-receipts/build.log
       - name: Execute Swift core and host contracts
+        working-directory: source
         run: |
           set -o pipefail
-          swift test --package-path apps/MTPLXApp 2>&1 | tee /tmp/native-receipts/tests.log
+          swift test --package-path apps/MTPLXApp 2>&1 | tee ../native-receipts/tests.log
       - uses: actions/upload-artifact@v4
         if: always()
-        with:
-          name: mtplx-native-readiness
-          path: /tmp/native-receipts/
-          retention-days: 7
-          if-no-files-found: error
+        with: {name: mtplx-native-readiness, path: 'native-receipts/', retention-days: 7, if-no-files-found: error}
