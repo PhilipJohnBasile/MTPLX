@@ -2,7 +2,7 @@ name: Integrated MTPLX native readiness
 on:
   push:
     branches: [codex/pr-review-audit-20260906]
-    paths: [.github/workflows/pr-native-readiness.yml, .review/native_fixes.py, .review/native_dispatch_fix.py]
+    paths: [.github/workflows/pr-native-readiness.yml, .review/native_fixes.py, .review/native_dispatch_fix.py, .review/native_fixture_readiness.py, .review/native_probe_scope_fix.py]
 permissions: {contents: read}
 jobs:
   native:
@@ -16,19 +16,18 @@ jobs:
         with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
-      - name: Install the exact source runtime used by native preflight
+      - name: Install exact native-launch runtime and scoped source fixes
         working-directory: source
         run: |
           mkdir -p ../native-receipts
           python -m pip install -q -e '.[dev,server]'
           mtplx --version > ../native-receipts/runtime-version.txt
           python -c 'import mlx.core; import mlx_lm; print("MLX runtime imports passed")' >> ../native-receipts/runtime-version.txt
-      - name: Apply SDK and typed-dispatch fixes to the pinned PR head
-        working-directory: source
-        run: |
           test "$(git rev-parse HEAD)" = 0dec47d37001efa614d622cc933a6bd633633321
           python3 ../audit/.review/native_fixes.py .
           python3 ../audit/.review/native_dispatch_fix.py .
+          python3 ../audit/.review/native_fixture_readiness.py .
+          python3 ../audit/.review/native_probe_scope_fix.py .
           git diff --check
           git diff -- apps/MTPLXApp > ../native-receipts/native.patch
           swift --version > ../native-receipts/swift-version.txt
@@ -37,7 +36,15 @@ jobs:
         run: |
           set -o pipefail
           swift build --package-path apps/MTPLXApp --product MTPLXApp 2>&1 | tee ../native-receipts/build.log
-      - name: Execute the full Swift core and host suite
+      - name: Reproduce and verify startup cancellation without debugger instrumentation
+        working-directory: source
+        run: |
+          set -o pipefail
+          framework=$(find apps/MTPLXApp/.build -name Sparkle.framework -type d | head -1)
+          if [ -n "$framework" ]; then export DYLD_FRAMEWORK_PATH="$(dirname "$framework")"; fi
+          swift test --package-path apps/MTPLXApp --filter testCancelDuringStartupLeavesAppStoppedAndRestoresFans 2>&1 | tee ../native-receipts/startup-regression.log
+          grep -q 'Executed 1 test, with 0 failures' ../native-receipts/startup-regression.log
+      - name: Execute the complete Swift core and host suite
         working-directory: source
         run: |
           set -o pipefail
@@ -58,7 +65,7 @@ jobs:
         with: {ref: 0dec47d37001efa614d622cc933a6bd633633321}
       - uses: actions/download-artifact@v4
         with: {name: mtplx-native-readiness, path: /tmp/receipts}
-      - name: Publish tested native source candidate only
+      - name: Publish only the validated native source candidate
         run: |
           test "$(git rev-parse HEAD)" = 0dec47d37001efa614d622cc933a6bd633633321
           git apply --check /tmp/receipts/native.patch
@@ -68,6 +75,6 @@ jobs:
           git add apps/MTPLXApp
           git config user.name 'Philip John Basile'
           git config user.email 'PBasile@Basilecom.com'
-          git commit -m 'fix(app): preserve actor isolation and typed dispatch boundary tests'
+          git commit -m 'fix(app): stabilize native startup and enforce typed tool dispatch tests'
           git push origin HEAD:refs/heads/codex/pr399-native-${{ github.run_id }}
           git rev-parse HEAD >> "$GITHUB_STEP_SUMMARY"
