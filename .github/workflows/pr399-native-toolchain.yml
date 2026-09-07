@@ -15,9 +15,9 @@ jobs:
       matrix:
         include:
           - label: baseline
-            source: f47c18dc
+            source: f47c18dca0b3f686c195337bca45811f1850d543
           - label: direct-default-probes
-            source: d27c8963
+            source: d27c8963321c54338b831c8fed96a26a16b6b144
     steps:
       - uses: actions/checkout@v4
         with:
