@@ -15,7 +15,7 @@ jobs:
         with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
       - uses: actions/setup-python@v5
         with: {python-version: '3.11'}
-      - name: Install native-launch runtime and apply scoped candidate
+      - name: Install runtime and apply scoped candidate
         working-directory: source
         run: |
           mkdir -p ../receipts
@@ -25,19 +25,7 @@ jobs:
           python3 ../audit/.review/native_concurrency_fix.py .
           git diff -- apps/MTPLXApp > ../receipts/native.patch
           python3 ../audit/.review/native_diagnostics.py .
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('apps/MTPLXApp/Sources/MTPLXAppCore/Services/MetricsStreamClient.swift')
-          s=p.read_text();old='''            } catch {
-                if Task.isCancelled { return }
-'''
-          assert s.count(old)==1
-          s=s.replace(old,'''            } catch {
-                print("FIXTURE_STREAM_ERROR", String(reflecting: error))
-                if Task.isCancelled { return }
-''')
-          p.write_text(s)
-          PY
+          python3 ../audit/.review/native_transport_diagnostics.py .
           swift --version > ../receipts/swift-version.txt
           swift test --package-path apps/MTPLXApp list > ../receipts/test-list.log 2>&1
       - name: Run failures and static-state regressions independently
