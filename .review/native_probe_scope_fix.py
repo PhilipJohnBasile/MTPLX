@@ -3,15 +3,32 @@ import sys
 p=Path(sys.argv[1])/'apps/MTPLXApp/Sources/MTPLXAppCore/Services/DaemonSupervisor.swift'
 s=p.read_text()
 old='        let existingHealth = probeHealth ? await initialHealthProbe(healthBaseURL, apiKey) : nil\n'
-new='''        // Keep the suspended probe result in a named, explicitly typed scope.
-        // A conditional await here triggers task-storage teardown failures on
-        // the supported Swift 6.1 toolchain during a cold/cancelled launch.
-        let existingHealth: HealthPayload?
+new='''        // The large payload crosses a small, fixed-size async result boundary.
+        // Keep probe completion separate from the launch's later suspension points.
+        let initialSnapshot: InitialHealthSnapshot?
         if probeHealth {
-            existingHealth = await initialHealthProbe(healthBaseURL, apiKey)
+            initialSnapshot = await readInitialHealthSnapshot(healthBaseURL, apiKey: apiKey)
         } else {
-            existingHealth = nil
+            initialSnapshot = nil
         }
+        let existingHealth = initialSnapshot?.health
 '''
 assert s.count(old)==1
-p.write_text(s.replace(old,new))
+s=s.replace(old,new)
+anchor='    private func startOwned(\n'
+helper='''    private final class InitialHealthSnapshot: Sendable {
+        let health: HealthPayload?
+
+        init(health: HealthPayload?) {
+            self.health = health
+        }
+    }
+
+    private func readInitialHealthSnapshot(_ baseURL: URL, apiKey: String?) async -> InitialHealthSnapshot {
+        let health = await initialHealthProbe(baseURL, apiKey)
+        return InitialHealthSnapshot(health: health)
+    }
+
+'''
+assert s.count(anchor)==1
+p.write_text(s.replace(anchor,helper+anchor))
