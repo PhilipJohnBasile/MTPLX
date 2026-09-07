@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "complete": false,
+  "pairs": [
+    {
+      "workload": "short",
+      "repetition": 1,
+      "output_parity": true
+    },
+    {
+      "workload": "long",
+      "repetition": 1,
+      "output_parity": false
+    }
+  ],
+  "output_parity_gate": false,
+  "any_incremental_cached_tokens": false,
+  "acceptance": "incomplete_or_requires_review",
+  "timing_note": "ON minus OFF; positive means ON was slower. Failed-parity timings are diagnostic, not eligible speed claims.",
+  "host_limit": "AC power and no competing model process observed before/after each arm; no continuous system-wide GPU trace.",
+  "within_arm_output_stability": {
+    "short": {
+      "off": {
+        "repetitions": 1,
+        "unique_outputs_per_turn": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "on": {
+        "repetitions": 1,
+        "unique_outputs_per_turn": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    "long": {
+      "off": {
+        "repetitions": 1,
+        "unique_outputs_per_turn": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "on": {
+        "repetitions": 1,
+        "unique_outputs_per_turn": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  },
+  "turn_summaries": [
+    {
+      "workload": "short",
+      "turn": 0,
+      "label": "cold tool call",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 5.996307041000364,
+      "on_ttft_generated_median_s": 6.117327791999742,
+      "paired_ttft_delta_median_s": 0.12102075099937792,
+      "paired_ttft_delta_min_s": 0.12102075099937792,
+      "paired_ttft_delta_max_s": 0.12102075099937792
+    },
+    {
+      "workload": "short",
+      "turn": 1,
+      "label": "tool result",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 0.5947435830003087,
+      "on_ttft_generated_median_s": 0.7417105419999643,
+      "paired_ttft_delta_median_s": 0.14696695899965562,
+      "paired_ttft_delta_min_s": 0.14696695899965562,
+      "paired_ttft_delta_max_s": 0.14696695899965562
+    },
+    {
+      "workload": "short",
+      "turn": 2,
+      "label": "plain append",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 0.6330114580005102,
+      "on_ttft_generated_median_s": 0.7801992079994307,
+      "paired_ttft_delta_median_s": 0.14718774999892048,
+      "paired_ttft_delta_min_s": 0.14718774999892048,
+      "paired_ttft_delta_max_s": 0.14718774999892048
+    },
+    {
+      "workload": "short",
+      "turn": 3,
+      "label": "repeated tool call",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 1.712867666999955,
+      "on_ttft_generated_median_s": 1.8673579999995127,
+      "paired_ttft_delta_median_s": 0.15449033299955772,
+      "paired_ttft_delta_min_s": 0.15449033299955772,
+      "paired_ttft_delta_max_s": 0.15449033299955772
+    },
+    {
+      "workload": "short",
+      "turn": 4,
+      "label": "repeated tool result",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 0.7132416670001476,
+      "on_ttft_generated_median_s": 0.8873327080000308,
+      "paired_ttft_delta_median_s": 0.17409104099988326,
+      "paired_ttft_delta_min_s": 0.17409104099988326,
+      "paired_ttft_delta_max_s": 0.17409104099988326
+    },
+    {
+      "workload": "long",
+      "turn": 0,
+      "label": "cold tool call",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 249.6132851249995,
+      "on_ttft_generated_median_s": 248.62481570799991,
+      "paired_ttft_delta_median_s": -0.9884694169995782,
+      "paired_ttft_delta_min_s": -0.9884694169995782,
+      "paired_ttft_delta_max_s": -0.9884694169995782
+    },
+    {
+      "workload": "long",
+      "turn": 1,
+      "label": "tool result",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 11.03609483299988,
+      "on_ttft_generated_median_s": 10.408787958000175,
+      "paired_ttft_delta_median_s": -0.6273068749997037,
+      "paired_ttft_delta_min_s": -0.6273068749997037,
+      "paired_ttft_delta_max_s": -0.6273068749997037
+    },
+    {
+      "workload": "long",
+      "turn": 2,
+      "label": "plain append",
+      "repetitions": 1,
+      "parity_passes": 0,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 1.30877799999962,
+      "on_ttft_generated_median_s": 1.682024249999813,
+      "paired_ttft_delta_median_s": 0.37324625000019296,
+      "paired_ttft_delta_min_s": 0.37324625000019296,
+      "paired_ttft_delta_max_s": 0.37324625000019296
+    },
+    {
+      "workload": "long",
+      "turn": 3,
+      "label": "repeated tool call",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 2.9697608750002473,
+      "on_ttft_generated_median_s": 3.359768916999201,
+      "paired_ttft_delta_median_s": 0.39000804199895356,
+      "paired_ttft_delta_min_s": 0.39000804199895356,
+      "paired_ttft_delta_max_s": 0.39000804199895356
+    },
+    {
+      "workload": "long",
+      "turn": 4,
+      "label": "repeated tool result",
+      "repetitions": 1,
+      "parity_passes": 1,
+      "cached_tokens_deltas": [
+        0
+      ],
+      "off_ttft_generated_median_s": 1.6519397919992116,
+      "on_ttft_generated_median_s": 2.247203124999942,
+      "paired_ttft_delta_median_s": 0.5952633330007302,
+      "paired_ttft_delta_min_s": 0.5952633330007302,
+      "paired_ttft_delta_max_s": 0.5952633330007302
+    }
+  ]
+}

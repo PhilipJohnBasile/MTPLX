@@ -96,4 +96,4 @@ The merge gate is incremental useful restoration beyond the current anchor set, 
 python -m unittest discover -s tests -p test_semantic_anchor_replay.py -v
 ```
 
-The 15 tests cover stream parsing, first-token attribution, missing/invalid usage, tool-only output, hash stability, comparison drift/parity, atomic non-overwriting receipts, and a loopback fake-server request replay. They establish the measurement contract only. The real 27B/128K run remains an explicit outstanding gate until hardware receipts are attached.
+The 15 tests cover stream parsing, first-token attribution, missing/invalid usage, tool-only output, hash stability, comparison drift/parity, atomic non-overwriting receipts, and a loopback fake-server request replay. They establish the measurement contract only. The [September 7 real-model receipt](semantic-anchor-20260907/README.md) contains one isolated pair per workload: no extra cached tokens and a long plain-append output-parity failure. A subsequent arm was excluded after the host isolation guard detected another campaign. The three-pair requirement and acceptance gate remain uncleared; these preliminary observations are not a speed claim.
