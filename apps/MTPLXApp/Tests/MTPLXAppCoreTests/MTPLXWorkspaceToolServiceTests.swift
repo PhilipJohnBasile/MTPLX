@@ -33,13 +33,14 @@ final class MTPLXWorkspaceToolServiceTests: XCTestCase {
     }
 
     func testPublicChatDispatchCannotBypassDaemonWorkspaceBoundary() async throws {
-        let result = try await object(
-            MTPLXChatToolFactory().dispatch(
-                name: "write_file",
-                argumentsJSON: #"{"path":"bypass.txt","content":"blocked"}"#
-            )
+        let dispatched = await MTPLXChatToolFactory().dispatch(
+            name: "write_file",
+            argumentsJSON: #"{"path":"bypass.txt","content":"blocked"}"#
         )
+        let result = try object(dispatched.resultJSON)
 
+        XCTAssertFalse(dispatched.succeeded)
+        XCTAssertEqual(dispatched.failure?.kind, .unknownTool)
         XCTAssertEqual(result["error"] as? String, "unknown_tool")
     }
 
