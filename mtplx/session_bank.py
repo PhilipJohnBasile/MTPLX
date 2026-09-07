@@ -2593,6 +2593,19 @@ class SessionBank:
             and entry.hidden_variant == container.hidden_variant
         ]
         for entry in victims:
+            if container.has_recurrent:
+                # Token containment alone is not state coverage. A recurrent
+                # container with only a 2K checkpoint cannot replace an exact
+                # 16K entry; doing so turned Hermes' next tool turn into a
+                # 31K re-prefill. Keep the smaller entry unless every restore
+                # point it supplies is present in the container as well.
+                points = [entry.prefix_len, *(int(r[0]) for r in entry.gdn_boundaries)]
+                if entry.gdn_boundary_loader is not None or any(
+                    (boundary := container.recurrent_boundary_at_or_below(point)) is None
+                    or int(boundary[0]) != point
+                    for point in points
+                ):
+                    continue
             self._evict_entry(entry, reason="superseded_by_longer_prefix")
         self._enforce_session_entry_retention(
             container.session_id, protected_tokens=tokens
@@ -2835,6 +2848,111 @@ class SessionBank:
                 break
             evicted += 1
         return evicted
+
+    def shrink_for_admission(
+        self,
+        target_bytes: int,
+        *,
+        protect_tokens: list[int] | tuple[int, ...] | None = None,
+        reason: str = "prefill_admission_chain",
+    ) -> tuple[int, int]:
+        """Escalating eviction for the admission shed (#447).
+
+        Runs only when the pre-prefill projection says the request in front
+        of us is likely to die on the sustained-pressure abort, after the
+        superseded clear and the ``protect_active`` LRU pass both came up
+        short: a deep session's sibling snapshots — forked generations of
+        the same conversation whose retokenized histories diverge, so
+        ``_supersede_contained_prefixes`` never collapses them — are all
+        active-protected there. A 12.6 GiB bank served a 7 GiB deficit
+        with zero evictions and the request 507'd.
+
+        Phase 1 walks non-terminal entries (any session keeps its highest
+        ``prefix_len`` entry — the one the protected-terminal order guards).
+        Phase 2, only if the deficit stands, takes remaining entries in the
+        take-anything order of real memory pressure (active sessions last).
+        Both phases spare the entry the imminent prompt restores from
+        (``protect_tokens``), and every eviction is RAM-only: the SSD cold
+        tier still restores a walked entry, so the worst case is a disk
+        read on some session's next turn, not this request's abort.
+        Returns ``(non_terminal_evicted, terminal_evicted)``.
+        """
+        target = max(0, int(target_bytes))
+        protected_keys: set[tuple[int, ...]] = set()
+        if protect_tokens:
+            tokens = tuple(int(token) for token in protect_tokens)
+            best_key = None
+            best_common = 0
+            for key, entry in self._entries.items():
+                common = common_prefix_len(tokens, entry.token_ids)
+                if common > best_common:
+                    best_common = common
+                    best_key = key
+            if best_key is not None:
+                protected_keys.add(best_key)
+
+        def _walk(candidates_fn, order_key) -> int:
+            evicted = 0
+            while self._entries and self.total_nbytes > target:
+                candidates = candidates_fn()
+                if not candidates:
+                    break
+                victim = min(candidates, key=order_key)
+                before = len(self._entries)
+                self._evict_entry(victim, reason=reason)
+                if len(self._entries) >= before:
+                    break
+                evicted += 1
+            return evicted
+
+        def _evictable(entry) -> bool:
+            # Entries holding a live cache reference are the live session's
+            # own arrays (the same bar _supersede_contained_prefixes sets);
+            # walking one frees nothing and costs the running session its
+            # state. Measured: the first decode after such an eviction ran
+            # at 15 tok/s against 63 stock.
+            return entry.cache_ref is None and not entry.live_ref_only
+
+        def _non_terminal_candidates():
+            terminal: dict[str, int] = {}
+            for entry in self._entries.values():
+                lineage = entry.session_id or ""
+                if entry.prefix_len > terminal.get(lineage, -1):
+                    terminal[lineage] = entry.prefix_len
+            return [
+                entry
+                for key, entry in self._entries.items()
+                if key not in protected_keys
+                and _evictable(entry)
+                and entry.prefix_len < terminal.get(entry.session_id or "", -1)
+            ]
+
+        non_terminal = _walk(
+            _non_terminal_candidates,
+            lambda entry: (
+                entry.last_access_s,
+                -entry.nbytes,
+                entry.created_at_s,
+            ),
+        )
+        if self.total_nbytes <= target:
+            return non_terminal, 0
+
+        active = self._active_session_ids()
+        terminal_evicted = _walk(
+            lambda: [
+                entry
+                for key, entry in self._entries.items()
+                if key not in protected_keys and _evictable(entry)
+            ],
+            lambda entry: (
+                entry.session_id in active,
+                entry.last_access_s,
+                -entry.nbytes,
+                entry.created_at_s,
+            ),
+        )
+        return non_terminal, terminal_evicted
 
     def _evict_entry(self, entry: SessionBankEntry, *, reason: str) -> None:
         entry.eviction_reason = reason

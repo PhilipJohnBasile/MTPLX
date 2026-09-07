@@ -13,7 +13,6 @@ import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-
 _SYSTEM_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 
 
@@ -135,11 +134,15 @@ def runtime_systems_snapshot(state: Any) -> dict[str, Any]:
     }
 
 
-def install_runtime_systems_endpoint(app: Any, state: Any) -> None:
+def install_runtime_systems_endpoint(
+    app: Any, state: Any, *, refresh: Callable[[], None] | None = None
+) -> None:
     """Install the read-only runtime systems endpoint on a FastAPI app."""
 
     @app.get("/v1/mtplx/systems")
     def mtplx_runtime_systems() -> dict[str, Any]:
+        if refresh is not None:
+            refresh()
         return runtime_systems_snapshot(state)
 
 

@@ -43,4 +43,6 @@ if __name__ == "__main__":
         },
         zip_safe=False,
         python_requires=">=3.11",
+        # This extension uses MLX's private C++ ABI; runtime must match build.
+        install_requires=["mlx==0.32.2"],
     )

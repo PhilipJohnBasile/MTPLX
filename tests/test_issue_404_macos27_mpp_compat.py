@@ -20,6 +20,8 @@ Two layers of protection are gated here:
 
 from __future__ import annotations
 
+import ast
+import os
 import re
 from pathlib import Path
 
@@ -82,19 +84,23 @@ def test_probe_exists_and_is_cached_once() -> None:
     )
 
 
-def test_enable_path_routes_through_probe_both_ways() -> None:
-    """Explicit ON and AUTO must both fail closed through the compile probe."""
+def test_enable_path_routes_through_probe_both_ways(monkeypatch) -> None:
+    """Explicit ON and AUTO must obey the selected producer's compile verdict.
 
-    text = (ROOT / "mtplx/models/qwen4_exp.py").read_text()
-    start = text.find("def _qsa_prefill_enabled")
-    assert start != -1
-    end = text.find("\ndef ", start + 1)
-    body = text[start:end]
-    assert body.count("_qsa_prefill_mpp_compile_ok()") >= 2, (
-        "_qsa_prefill_enabled must consult the #404 compile probe on both "
-        "the explicit-on and AUTO paths; honoring MTPLX_QSA_PREFILL=1 "
-        "verbatim on a refusing SDK is a guaranteed mid-request 500"
-    )
-    assert "return True" not in body, (
-        "no unconditional True path may remain in _qsa_prefill_enabled"
-    )
+    Execute the small resolver without importing MLX, retaining this gate on
+    non-Mac CI. The producer wrapper selects MPP only on NAX hardware; its
+    hardware routing is covered separately by test_qsa_portable_producer_gate.
+    """
+    tree = ast.parse((ROOT / "mtplx/models/qwen4_exp.py").read_text())
+    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                and n.name == "_qsa_prefill_enabled")
+    calls = []
+    scope = {"os": os, "qsa_prefill_lane_auto_supported": lambda: True,
+             "_qsa_prefill_producer_compile_ok": lambda: calls.append(True) or allowed}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), "<prefill-resolver>", "exec"), scope)
+    for raw in ("1", "auto"):
+        monkeypatch.setenv("MTPLX_QSA_PREFILL", raw)
+        for allowed in (False, True):
+            calls.clear()
+            assert scope["_qsa_prefill_enabled"]() is allowed
+            assert calls == [True]

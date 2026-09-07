@@ -393,9 +393,45 @@ SSE_KEEPALIVE_MIN_INTERVAL_S = 1.0
 # heartbeat many times per second (every settled engine forward and every
 # scheduler item), so only a genuinely parked owner can breach; the default
 # clears even a multi-minute model load. 0 disables.
-STREAM_STALL_DEADLINE_S = float(
-    os.environ.get("MTPLX_STREAM_STALL_DEADLINE_S") or 300.0
+STREAM_STALL_DEADLINE_DEFAULT_S = 300.0
+
+
+def _resolve_stream_stall_deadline_s(raw: str | float | None) -> float:
+    """Seconds a stream may wait on a frozen model owner; 0 turns it off.
+
+    Blank or absent means the default; "0" (the documented off switch) must
+    stay 0 rather than falling through to the default (issue #448).
+    """
+    if raw is None:
+        return STREAM_STALL_DEADLINE_DEFAULT_S
+    text = str(raw).strip()
+    if not text:
+        return STREAM_STALL_DEADLINE_DEFAULT_S
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        return STREAM_STALL_DEADLINE_DEFAULT_S
+
+
+STREAM_STALL_DEADLINE_S = _resolve_stream_stall_deadline_s(
+    os.environ.get("MTPLX_STREAM_STALL_DEADLINE_S")
 )
+
+
+def set_stream_stall_deadline_s(value: float | None) -> float:
+    """Apply ``--stream-stall-deadline-s`` for this process (issue #448).
+
+    The macOS app launches the daemon from LaunchServices, where a shell
+    ``export`` is invisible, so the deadline is a serve flag the app can pass
+    from its settings. Mirrors the value into the environment so ``/health``,
+    child tools, and the serve log agree on the active deadline.
+    """
+    global STREAM_STALL_DEADLINE_S
+    if value is None:
+        return STREAM_STALL_DEADLINE_S
+    STREAM_STALL_DEADLINE_S = _resolve_stream_stall_deadline_s(value)
+    os.environ["MTPLX_STREAM_STALL_DEADLINE_S"] = repr(STREAM_STALL_DEADLINE_S)
+    return STREAM_STALL_DEADLINE_S
 # Absolute bound on the post-generation commit wait of a streamed response
 # (issue #425, 66duke66). Once decode has finished the client already holds
 # every token; only the terminal frame and [DONE] are missing. The session
@@ -1645,6 +1681,7 @@ class MTPLXSettingsUpdate(BaseModel):
     draft_temperature: float | None = None
     draft_top_p: float | None = None
     draft_top_k: int | None = None
+    adaptive_policy: str | None = None
 
 
 class FanModeRequest(BaseModel):
@@ -2350,17 +2387,18 @@ def _apply_metal_memory_caps(
     total_ram_bytes: int | None = None,
     minimum_resident_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Pin MLX Metal allocator caps at startup to avoid wired-memory swap-out
-    pathologies under sustained long-context inference.
+    """Set MLX allocation and wired-residency budgets at startup.
 
     On Apple Silicon, MLX's Metal allocator can grow the wired pool past safe
     headroom under back-to-back >30 K-token requests. When the OS starts
     swapping, decode collapses ~10x (50 t/s -> 2.5 t/s) and the kernel may kill
-    the process. Setting both caps at startup keeps the allocator inside a
-    fixed budget; ``clear_cache`` periodically drops idle pool memory.
+    the process. The allocation limit is MLX's working-set guideline, not an
+    instantaneous hard ceiling: a single operation can exceed it. Admission
+    and request pressure guards remain necessary. ``clear_cache`` releases
+    unused allocator buffers; it does not clear the session bank.
 
     Operators can override via env:
-      MTPLX_MEMORY_LIMIT_BYTES   - hard cap, default 75% of total RAM,
+      MTPLX_MEMORY_LIMIT_BYTES   - allocation budget, default 75% of total RAM,
                                    capped at 192 GiB on very large Macs
       MTPLX_WIRED_LIMIT_BYTES    - wired (resident) cap, default 60% of total
                                    RAM, capped at 160 GiB on very large Macs
@@ -15596,6 +15634,10 @@ def _metrics_envelope(
         "mtp_history_policy": str(stats.get("mtp_history_policy") or ""),
         "mtp_history_window_tokens": int(stats.get("mtp_history_window_tokens") or 0),
         "mtp_history_position_base": int(stats.get("mtp_history_position_base") or 0),
+        **({"fixed_m4_admission": stats["fixed_m4_admission"]}
+           if stats.get("fixed_m4_admission") else {}),
+        **({"compiled_verify": stats["graphbank"]["compiled_verify"]}
+           if (stats.get("graphbank") or {}).get("compiled_verify") else {}),
         **_maintenance_timing_stats(stats),
         "session_cache_hit": bool(session_cache_hit),
         "cache_miss_reason": cache_miss_reason,
@@ -16006,6 +16048,14 @@ def _dashboard_publish_prefill(
         enriched["session_id"] = session_id
         # Live tok/s during chunked prefill (completion provides its own).
         if enriched.get("phase") == "chunk":
+            # Use exactly the measured work shown by the live gauge. A
+            # completed request's prompt timer also includes MTP history and
+            # other setup; averaging it is not an average of live prefill.
+            if dashboard.in_flight.get(request_id) is not None:
+                dashboard.prefill_history.record_chunk(
+                    int(enriched.get("chunk_size") or 0),
+                    float(enriched.get("chunk_elapsed_s") or 0.0),
+                )
             tokens_done = float(enriched.get("tokens_done") or 0)
             elapsed = float(enriched.get("elapsed_s") or 0)
             if tokens_done > 0 and elapsed > 0:
@@ -16059,6 +16109,12 @@ def _dashboard_publish_progress(
             return None
 
         enriched = dict(payload)
+        # The decoder already publishes these counters at ~1 Hz. Progress
+        # used to omit them, clearing the app's waterfall on every new turn.
+        # Reuse the same request-scoped host snapshot; never evaluate the GPU.
+        recorder = getattr(state, "flight", None)
+        if recorder is not None:
+            enriched.update(recorder.live_depth_snapshot(request_id))
         enriched["dashboard_progress_published"] = True
         registry_started_s = time.perf_counter()
         dashboard.in_flight.update_progress(request_id, enriched)
@@ -16150,6 +16206,7 @@ DASHBOARD_MUTABLE_SETTINGS_KEYS: tuple[str, ...] = (
     "draft_temperature",
     "draft_top_p",
     "draft_top_k",
+    "adaptive_policy",
 )
 DASHBOARD_READ_ONLY_SETTINGS_KEYS: tuple[str, ...] = (
     # Every informational key the settings GET echoes must be listed here so
@@ -16184,6 +16241,7 @@ DASHBOARD_READ_ONLY_SETTINGS_KEYS: tuple[str, ...] = (
     "tool_contract_policy_version",
     "tool_prompt_mode",
     "tune_policy",
+    "adaptive_depth_supported",
 )
 DASHBOARD_RESTART_REQUIRED_KEYS: tuple[str, ...] = (
     "profile",
@@ -16520,6 +16578,9 @@ def _health_degradation_payload(state: Any) -> dict[str, Any]:
         for module_name, attr_name in (
             ("mtplx.kernels.sdpa_gqa_packed", "gqa_packed_bail_counts"),
             ("mtplx.attention_split", "gqa_packed_route_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_flash", "nax_flash_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_flash_dsplit", "nax_flash_dsplit_bail_counts"),
+            ("mtplx.kernels.sdpa_nax_tile", "nax_tile_bail_counts"),
         ):
             try:
                 from importlib import import_module
@@ -16531,6 +16592,26 @@ def _health_degradation_payload(state: Any) -> dict[str, Any]:
                 kernel_bails[attr_name] = dict(value)
         if kernel_bails:
             nax["bail_counters"] = kernel_bails
+    # The positive receipt: how often the flash-decoding route actually
+    # dispatched on this GPU. With the hardware gate (#458/#459) an M1-M4
+    # Mac shows zero here and gpu_family_or_os bails above; an M5 shows
+    # the dispatch count climbing once a session passes the 8192-token
+    # KV bucket.
+    flash_dispatches: dict[str, Any] = {}
+    for module_name, attr_name in (
+        ("mtplx.kernels.sdpa_nax_flash", "nax_flash_dispatch_counts"),
+        ("mtplx.kernels.sdpa_nax_flash_dsplit", "nax_flash_dsplit_dispatch_counts"),
+    ):
+        try:
+            from importlib import import_module
+
+            value = getattr(import_module(module_name), attr_name, None)
+        except BaseException:
+            continue
+        if isinstance(value, Mapping):
+            flash_dispatches[attr_name] = dict(value)
+    if flash_dispatches:
+        nax["flash_dispatch_counters"] = flash_dispatches
 
     return {
         "compiled_verify": compiled_verify,
@@ -16623,6 +16704,13 @@ def _coerce_setting(name: str, value: Any) -> Any:
         if name == "draft_top_k" and coerced < 0:
             raise ValueError("draft_top_k must be non-negative")
         return coerced
+    if name == "adaptive_policy":
+        text = str(value).strip().lower()
+        if text not in {"none", "streak", "expected_value", "cost"}:
+            raise ValueError(
+                "adaptive_policy must be one of none, streak, expected_value, cost"
+            )
+        return text
     if name == "generation_mode":
         text = str(value).strip().lower()
         if text not in {"mtp", "ar"}:
@@ -16746,6 +16834,18 @@ def _mtplx_apply_settings_payload(
                             "for the loaded model"
                         ),
                     )
+            if (
+                key == "adaptive_policy"
+                and value != "none"
+                and not backend.supports("native_adaptive_depth_policy")
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"{backend.backend_id} owns its draft policy; "
+                        "adaptive_policy must be 'none' for the loaded model"
+                    ),
+                )
             if (
                 key == "generation_mode"
                 and value == "mtp"
@@ -16950,6 +17050,12 @@ def _mtplx_current_settings(state: "ServerState") -> dict[str, Any]:
         "generation_mode": str(getattr(args, "generation_mode", "mtp") or "mtp"),
         "depth": int(getattr(args, "depth", 3) or 3),
         "depth_max": int(backend.draft_semantics.maximum),
+        # Live-mutable like depth: the daemon builds its depth policy per
+        # request from state.args, so the app's Adaptive depth toggle needs
+        # no restart. A family that owns its own draft policy reports
+        # unsupported and the toggle stays hidden.
+        "adaptive_policy": str(getattr(args, "adaptive_policy", "none") or "none"),
+        "adaptive_depth_supported": bool(backend.supports("native_adaptive_depth_policy")),
         "draft_control": backend.draft_semantics.to_dict(),
         "backend_id": backend.backend_id,
         "architecture_id": backend.architecture_id,
@@ -17263,6 +17369,7 @@ def _mtplx_dashboard_snapshot(state: "ServerState") -> dict[str, Any]:
         "in_flight": dashboard.in_flight.snapshot(),
         "latest": state.last_metrics[-1] if state.last_metrics else None,
         "recent": state.last_metrics[-32:],
+        "prefill_rates": dashboard.prefill_history.rates(),
         "rolling": dashboard.rolling.snapshot(),
         "lifetime": dashboard.lifetime.snapshot(),
         "sessions": sessions_dict,
@@ -17426,6 +17533,55 @@ def _allocation_failure_http_exception(
     )
 
 
+def _prefill_admission_refusal(
+    state: "ServerState", receipt: Mapping[str, Any]
+) -> HTTPException:
+    """The structured 507 for a prompt the shed could not make fit (#450).
+
+    Raised before prefill, so the engine keeps every resident session and
+    the client gets a real answer instead of a swap spiral or a kernel panic.
+    """
+    gib = float(1024**3)
+    limit = int(receipt.get("limit_bytes") or 0)
+    projected = int(
+        receipt.get("projected_bytes_after") or receipt.get("projected_bytes") or 0
+    )
+    over = max(0, projected - limit)
+    prompt_tokens = int(receipt.get("prompt_tokens") or 0)
+    miss_tokens = int(receipt.get("miss_tokens") or 0)
+    return HTTPException(
+        status_code=507,
+        detail=(
+            "insufficient memory: this prompt projects "
+            f"{projected / gib:.1f} GiB against the engine's {limit / gib:.1f} GiB "
+            f"limit ({over / gib:.1f} GiB over) after the allocator cache and the "
+            f"session bank were reclaimed ({prompt_tokens} prompt tokens, "
+            f"{miss_tokens} not cached). The engine stays up and keeps its "
+            "sessions; this request was refused before prefill instead of "
+            "pushing the Mac into swap. Reduce the prompt, start a new "
+            "conversation, close other apps, or use q8 KV quantization; "
+            "--allow-swap admits it anyway."
+        ),
+    )
+
+
+def _vision_bank_session_id(bank: Any, prompt_ids: list[int], splice: Any) -> str | None:
+    """Recover anonymous lineage from a pixel-keyed snapshot, never raw KV.
+
+    Vision deliberately has no raw-token session frontier. Its bank entry
+    still owns a session id; reusing that id keeps consecutive image turns
+    in one cache budget instead of creating a protected terminal per turn.
+    Require an exact prefix containing pixels, not a shared text preamble.
+    """
+    from mtplx.vision.splice import vision_bank_key_ids
+
+    keys = vision_bank_key_ids(prompt_ids, splice)
+    entry = bank.longest_prefix(keys) if keys is not None else None
+    if entry is None or tuple(prompt_ids[:len(entry.token_ids)]) == entry.token_ids:
+        return None
+    return entry.session_id
+
+
 def _prefill_admission_shed_enabled() -> bool:
     return os.environ.get(
         "MTPLX_PREFILL_ADMISSION_SHED", "1"
@@ -17440,8 +17596,20 @@ def _prefill_admission_min_miss_tokens() -> int:
         return 4096
 
 
-# Same line as _allocator_pressure_level's WARNING edge: at >=97% of the
-# Metal limit the next growth step swaps.
+def _prefill_admission_live_prefix_enabled() -> bool:
+    return os.environ.get(
+        "MTPLX_PREFILL_ADMISSION_LIVE_PREFIX", "1"
+    ).strip().lower() not in {"0", "off", "false", "no"}
+
+
+def _prefill_admission_chain_shed_enabled() -> bool:
+    return os.environ.get(
+        "MTPLX_PREFILL_ADMISSION_CHAIN_SHED", "1"
+    ).strip().lower() not in {"0", "off", "false", "no"}
+
+
+# Same line as _allocator_pressure_level's WARNING edge. This is an early
+# allocation-budget signal, not proof that the operating system is swapping.
 _PREFILL_ADMISSION_PRESSURE_FRACTION = 0.97
 
 
@@ -17470,6 +17638,7 @@ def _prefill_admission_shed(
     prompt_ids: list[int],
     session_bank: Any | None,
     session_id: str | None,
+    vision_splice: Any | None = None,
 ) -> dict[str, Any] | None:
     """Release idle memory BEFORE a tight cache-miss prefill (#415).
 
@@ -17484,10 +17653,12 @@ def _prefill_admission_shed(
 
     Projects the miss-prefill footprint against the live allocator state
     and, only when the projection crosses the guard's WARNING line, frees
-    in escalation order: superseded same-session bank entries (the prefix
+    in escalation order: unused allocator cache, superseded same-session
+    bank entries (the prefix
     was rewritten, so they can never be restored by this lineage again),
-    then LRU idle entries with every active session protected, then the
-    allocator cache. Never raises; returns the receipt when it acted.
+    then LRU idle entries with every active session protected, then sibling
+    and terminal snapshots while protecting the incoming restore source.
+    Never raises; returns the receipt when it acted.
     """
 
     if not _prefill_admission_shed_enabled():
@@ -17496,6 +17667,18 @@ def _prefill_admission_shed(
         prompt_tokens = len(prompt_ids)
         if prompt_tokens < _prefill_admission_min_miss_tokens():
             return None
+        if vision_splice is not None:
+            # Admission must ask the same content-keyed question as restore.
+            # Raw image pads only match the text before the first image;
+            # that false miss can evict the very snapshot we need and refuse
+            # a warm request. Surrogates never reach the model input.
+            from mtplx.vision.splice import vision_bank_key_ids
+
+            keyed_ids = vision_bank_key_ids(prompt_ids, vision_splice)
+            if keyed_ids is None:
+                session_bank = None
+            else:
+                prompt_ids = keyed_ids
         caps = getattr(state, "metal_memory_caps", None)
         limit = 0
         if isinstance(caps, dict):
@@ -17560,6 +17743,56 @@ def _prefill_admission_shed(
                 if block_tokens > reused_tokens:
                     reused_tokens = block_tokens
                     reused_mode = "block_prefix"
+        # The bank is not the only holder of reusable state: the engine's
+        # live sessions serve a committed prefix directly (that is what a
+        # warm turn's cached_tokens reads), and a live frontier can be
+        # unbanked — a refused snapshot (retokenized-history mismatch)
+        # banks nothing while the live KV still serves. Estimating from
+        # the bank alone read a warm 212k-token session as a full miss,
+        # cleared its snapshots as "superseded", and every client retry
+        # was then a 211,807-token cold miss that could never be admitted
+        # until a server restart (#447).
+        if vision_splice is None and _prefill_admission_live_prefix_enabled():
+            sessions = getattr(state, "sessions", None)
+            live_tokens = 0
+            if sessions is not None:
+                # Ask the same ladder session resolution asks (exact, then
+                # pending-postcommit near prefix, then best common prefix),
+                # with the non-exact answers rewound to the block floor the
+                # bank estimate above uses — the reuse a request achieves
+                # is never more optimistic than resolution's own match.
+                try:
+                    exact_fn = getattr(sessions, "longest_prefix_session", None)
+                    live = exact_fn(prompt_ids) if callable(exact_fn) else None
+                    if live is not None:
+                        live_tokens = len(
+                            getattr(live, "committed_token_ids", ()) or ()
+                        )
+                    if live_tokens <= 0:
+                        near_fn = getattr(
+                            sessions, "pending_near_prefix_session", None
+                        )
+                        if callable(near_fn):
+                            near, matched = near_fn(prompt_ids)
+                            if near is not None:
+                                live_tokens = _block_restorable_prefix_tokens(
+                                    int(matched)
+                                )
+                    if live_tokens <= 0:
+                        common_fn = getattr(
+                            sessions, "best_common_prefix_session", None
+                        )
+                        if callable(common_fn):
+                            shared, matched = common_fn(prompt_ids)
+                            if shared is not None:
+                                live_tokens = _block_restorable_prefix_tokens(
+                                    int(matched)
+                                )
+                except Exception:
+                    live_tokens = 0
+            if live_tokens > reused_tokens:
+                reused_tokens = int(live_tokens)
+                reused_mode = "live_session"
         miss_tokens = max(0, prompt_tokens - reused_tokens)
         if miss_tokens < _prefill_admission_min_miss_tokens():
             return None
@@ -17578,8 +17811,28 @@ def _prefill_admission_shed(
             "threshold_bytes": int(threshold),
             "limit_bytes": int(limit),
         }
-        deficit = projected - threshold
-        if session_bank is not None:
+        # The allocator pool is free storage, whereas session snapshots
+        # avoid real re-prefill/SSD work. Reclaim the pool and remeasure
+        # before choosing any snapshot victims. Counting it as an admission
+        # deficit evicted useful conversations even when active KV fitted.
+        try:
+            import mlx.core as _mx
+
+            _mx.clear_cache()
+            receipt["cache_cleared"] = True
+        except Exception as exc:
+            receipt["cache_cleared"] = False
+            receipt["cache_clear_error"] = repr(exc)
+        after_cache = _mlx_memory_stats_live()
+        if int(after_cache.get("active_memory_bytes") or 0) > 0:
+            projected = (
+                int(after_cache["active_memory_bytes"])
+                + int(after_cache.get("cache_memory_bytes") or 0)
+                + miss_tokens * per_token + transients
+            )
+        receipt["projected_bytes_after_cache_clear"] = int(projected)
+        deficit = max(0, projected - threshold)
+        if session_bank is not None and deficit > 0:
             try:
                 bank_bytes_before = int(session_bank.total_nbytes)
                 receipt["bank_bytes_before"] = bank_bytes_before
@@ -17606,19 +17859,74 @@ def _prefill_admission_shed(
                             protect_active=True,
                         )
                     )
+                # Escalation between the protected LRU pass and giving up
+                # (#447): a deep session's sibling snapshots — forked
+                # generations of the same conversation that no put()-time
+                # supersede collapses — are active-protected above, so a
+                # 12.6 GiB bank served a 7 GiB deficit with zero evictions
+                # and the request died on the sustained-pressure 507. Walk
+                # those chain prefixes (never a session's terminal entry,
+                # never the entry this prompt restores from; the SSD cold
+                # tier keeps every eviction restorable) before letting the
+                # prefill start into a projection that crosses the line.
+                if _prefill_admission_chain_shed_enabled():
+                    bank_bytes_now = int(session_bank.total_nbytes)
+                    remaining = deficit - max(
+                        0, bank_bytes_before - bank_bytes_now
+                    )
+                    chain_fn = getattr(
+                        session_bank, "shrink_for_admission", None
+                    )
+                    if (
+                        remaining > 0
+                        and bank_bytes_now > 0
+                        and callable(chain_fn)
+                    ):
+                        chain_evicted, terminal_evicted = chain_fn(
+                            max(0, bank_bytes_now - remaining),
+                            protect_tokens=prompt_ids,
+                            reason="prefill_admission_chain",
+                        )
+                        receipt["chain_entries_evicted"] = int(chain_evicted)
+                        receipt["terminal_entries_evicted"] = int(
+                            terminal_evicted
+                        )
                 receipt["bank_bytes_after"] = int(session_bank.total_nbytes)
             except Exception as exc:
                 receipt["bank_error"] = repr(exc)
-        try:
-            import mlx.core as _mx
+        if deficit > 0:
+            # Evicted leaves may now sit in the allocator pool. Return that
+            # storage before the final physical-memory receipt as well.
+            try:
+                import mlx.core as _mx
 
-            _mx.clear_cache()
-            receipt["cache_cleared"] = True
-        except Exception:
-            receipt["cache_cleared"] = False
+                _mx.clear_cache()
+                receipt["cache_cleared"] = True
+            except Exception as exc:
+                receipt["cache_clear_error"] = repr(exc)
         after = _mlx_memory_stats_live()
         receipt["active_bytes_after"] = int(after.get("active_memory_bytes") or 0)
         receipt["cache_bytes_after"] = int(after.get("cache_memory_bytes") or 0)
+        # #450: admission past the hard limit is not "shed and hope". On a
+        # 128 GB Mac the shed admitted a 136k prompt at a projected 105.4 GB
+        # against a 103.1 GB limit once the allocator cache was cleared, and
+        # nothing downstream stops such a request safely: MLX's limit is
+        # soft, macOS compresses and swaps for minutes, and that machine
+        # kernel-panicked four times before any 507 could fire. When the
+        # projection still crosses the limit after every reclamation step,
+        # mark the receipt refused; the caller answers with the structured
+        # 507 before prefill. --allow-swap (#427) keeps the operator's
+        # explicit past-the-fit choice.
+        projected_after = (
+            int(after.get("active_memory_bytes") or 0)
+            + int(after.get("cache_memory_bytes") or 0)
+            + miss_tokens * per_token
+            + transients
+        )
+        receipt["projected_bytes_after"] = int(projected_after)
+        if projected_after > limit and not bool(getattr(state, "allow_swap", False)):
+            receipt["refused"] = True
+            receipt["refusal_reason"] = "projected_over_limit_after_reclamation"
         _record_guard_event(state, receipt)
         try:
             print("[mtplx] memory guard " + json.dumps(receipt), flush=True)
@@ -17644,8 +17952,8 @@ def _allocator_pressure_level(state: "ServerState") -> tuple[int, float]:
     macOS's kern.memorystatus level fires only once the system is already
     compressing/swapping — on a 48 GB Mac that is minutes into the death
     spiral (#305: 61.8/48.0 GB before the first signal). The allocator
-    knows earlier: active+cache at >=97% of the configured Metal memory
-    limit means the next growth step swaps, so treat it as WARNING (2);
+    knows its allocation envelope earlier: active+cache at >=97% of the
+    configured Metal memory limit is treated as WARNING (2);
     past the limit is CRITICAL-equivalent (4). Returns (level, fraction).
     """
     caps = getattr(state, "metal_memory_caps", None)
@@ -19631,7 +19939,13 @@ def _request_observability(
             "x-mtplx-request-id",
         }
     }
+    client_links = {}
+    for name in ("turn", "entry"):
+        value = str(headers.get(f"x-mtplx-client-{name}-id") or "")
+        if _CLIENT_REQUEST_ID_RE.fullmatch(value):
+            client_links[f"request_client_{name}_id"] = value
     return {
+        **client_links,
         "request_message_count": len(request.messages),
         "request_message_roles": [message.role for message in request.messages],
         "request_message_chars": [
@@ -19791,6 +20105,25 @@ def _opencode_launch_default_draft_policy(
         )
 
 
+def _bank_history_policy(state: "ServerState") -> str:
+    """The MTP-history policy every bank store, lookup and fingerprint uses.
+
+    MTP runtimes bank prefixes under ``committed`` (the committed MTP-history
+    cache shape). A target-only AR runtime (``--no-load-mtp``) has no MTP
+    head: generation degrades its prefill to the ``cycle`` path and the
+    postcommit store already banked under ``cycle`` — while the lookups, the
+    prefill store and the policy fingerprint kept saying ``committed``. The
+    bank compares the two strings, so every postcommit entry (the longest
+    prefix, the one the next turn matches) was refused with
+    ``policy_mismatch`` and an AR-only Hermes or Pi session re-prefilled its
+    whole prompt on every top-level turn (#465: 14.5k tokens, ~2 minutes per
+    turn on an M1 Max; the idle stall in #455 on an M3 Ultra). One answer per
+    runtime, derived here, used everywhere.
+    """
+    runtime = getattr(state, "runtime", None)
+    return "committed" if bool(getattr(runtime, "mtp_enabled", True)) else "cycle"
+
+
 def _policy_fingerprint(
     state: ServerState,
     *,
@@ -19855,13 +20188,19 @@ def _policy_fingerprint(
         f"generation_mode={effective_mode}",
         f"depth={effective_depth}",
         "hidden_variant=post_norm",
-        "mtp_history_policy=committed",
+        f"mtp_history_policy={_bank_history_policy(state)}",
         f"draft_head={state.draft_head_identity}",
         f"adaptive={json.dumps(adaptive, sort_keys=True, separators=(',', ':'))}",
         f"proposal_cache={json.dumps(proposal_cache, sort_keys=True, separators=(',', ':'))}",
         f"online_hidden={json.dumps(online_hidden, sort_keys=True, separators=(',', ':'))}",
     ]
     normalized_cache_scope = str(cache_scope or "").strip()
+    if _model_family_for_state(state) == "qwen4_exp":
+        from mtplx.models.qwen4_exp import vision_qsa_enabled
+
+        # Old vision entries used dense attention, including their text
+        # prefixes. They must not seed the corrected sparse model path.
+        parts.append(f"vision_attention=mrope_qsa_v1:{int(vision_qsa_enabled())}")
     mtp_batch_lane = getattr(state, "mtp_batch_lane", None)
     if mtp_batch_lane is not None:
         parts.extend(
@@ -20478,8 +20817,9 @@ def _store_retokenized_history_snapshot(
     # postcommit re-prefill through the AR (cycle) path instead: the trunk cache
     # is still banked for next-turn prefix reuse, and the stored policy metadata
     # stays consistent with what the next AR turn looks up. MTP runtimes keep
-    # the committed policy unchanged.
-    history_mtp_policy = "committed" if state.runtime.mtp_enabled else "cycle"
+    # the committed policy unchanged. The lookups and the prefill store derive
+    # the same answer from _bank_history_policy (#465).
+    history_mtp_policy = _bank_history_policy(state)
     try:
         try:
             if _abort_requested():
@@ -20798,6 +21138,17 @@ def _history_ids_for_postcommit(
                         strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                     )
                 )
+                if _reasoning_history_preserve_echo_active(state) and history_messages:
+                    # An older rewritten/interrupted turn can close the
+                    # history substitution walk. This response is owned by
+                    # this request: match its own visible/tool body before
+                    # carrying its reasoning, independently of older turns.
+                    # Full snapshot compatibility still compares every token.
+                    current, _ = _substitute_committed_reasoning_messages(
+                        history_messages[-1:], committed_turns[-1:],
+                        strip_tool_call_preamble_text=strip_tool_call_preamble_text,
+                    )
+                    history_messages[-1:] = current
                 substitution_walked = True
     if not substitution_walked:
         history_messages = [
@@ -21153,7 +21504,7 @@ def _store_generation_final_history_snapshot(
             keep_live_ref=bool(keep_live_ref),
             session_id=session_id,
             template_hash=state.template_hash,
-            mtp_history_policy="committed",
+            mtp_history_policy=_bank_history_policy(state),
             draft_head_identity=state.draft_head_identity,
             policy_fingerprint=policy_fingerprint,
             mtp_history_snapshot=mtp_snapshot,
@@ -22533,7 +22884,7 @@ def _build_mtp_batch_session_hooks(
                 mtp_enabled=True,
                 hidden_variant="post_norm",
                 template_hash=template_hash,
-                mtp_history_policy="committed",
+                mtp_history_policy=_bank_history_policy(state),
                 draft_head_identity=state.draft_head_identity,
                 policy_fingerprint=policy_fingerprint,
                 min_restore_tokens=min_restore_tokens,
@@ -22632,7 +22983,7 @@ def _build_mtp_batch_session_hooks(
                 hidden_variant="post_norm",
                 session_id=session_id,
                 template_hash=template_hash,
-                mtp_history_policy="committed",
+                mtp_history_policy=_bank_history_policy(state),
                 draft_head_identity=state.draft_head_identity,
                 policy_fingerprint=policy_fingerprint,
                 mtp_history_snapshot=mtp_snapshot,
@@ -23759,7 +24110,10 @@ def _run_generation(
         and requested_depth > 0
     ):
         effective_depth = max(1, min(int(resolved_mtp_depth), int(requested_depth)))
-    started = time.perf_counter()
+    # Include admission and pending-history waits in user-facing TTFT/wall
+    # time. Decode still starts at the first produced token; throughput is
+    # unaffected. Previously a 39s postcommit wait vanished from the receipt.
+    started = float((request_observability or {}).get("request_received_monotonic_s") or time.perf_counter())
     token_times: list[float] = []
     lock_wait_time_s = 0.0
 
@@ -23849,9 +24203,12 @@ def _run_generation(
                 prompt_ids=prompt_ids,
                 session_bank=session_bank,
                 session_id=session_id,
+                vision_splice=vision_splice,
             )
             if admission_shed is not None and request_observability is not None:
                 request_observability["prefill_admission_shed"] = admission_shed
+            if admission_shed is not None and admission_shed.get("refused"):
+                raise _prefill_admission_refusal(state, admission_shed)
             dynamic_kv_reservation = _dynamic_paged_kv_reservation(
                 prompt_tokens=len(prompt_ids),
                 max_new_tokens=response_max,
@@ -23980,7 +24337,7 @@ def _run_generation(
                         seed=generation_seed,
                         mtp_hidden_variant="post_norm",
                         mtp_cache_policy="persistent",
-                        mtp_history_policy="committed",
+                        mtp_history_policy=_bank_history_policy(state),
                         verify_strategy=state.args.verify_strategy,
                         verify_core=state.args.verify_core,
                         draft_core=str(
@@ -24127,7 +24484,7 @@ def _run_generation(
                 keep_live_ref=bool(session_keep_live_ref),
                 session_id=session_id,
                 template_hash=session_template_hash,
-                mtp_history_policy="committed",
+                mtp_history_policy=_bank_history_policy(state),
                 draft_head_identity=session_draft_head_identity,
                 policy_fingerprint=session_policy_fingerprint,
                 mtp_history_snapshot=mtp_snapshot,
@@ -24951,6 +25308,12 @@ def _run_startup_warmup(state: ServerState) -> dict[str, Any]:
 
 def _decode_timing(stats: dict[str, Any]) -> tuple[float, float]:
     generated_tokens = int(stats.get("generated_tokens") or 0)
+    # Native generators already separate restore, prompt-state construction
+    # and verifier setup. Recomputing from prefill compute alone charged that
+    # setup to decode a second time (11 s in the Hermes incident replay).
+    measured_decode_s = stats.get("decode_elapsed_s")
+    if measured_decode_s is not None and float(measured_decode_s) > 0.0:
+        return generated_tokens / float(measured_decode_s), float(measured_decode_s)
     elapsed_s = float(stats.get("elapsed_s") or 0.0)
     if "prompt_eval_time_s" in stats:
         prompt_eval_time_s = float(stats.get("prompt_eval_time_s") or 0.0)
@@ -28348,7 +28711,12 @@ def create_app(state: ServerState) -> FastAPI:
 
     app = FastAPI(title="MTPLX OpenAI-compatible server", lifespan=lifespan)
     app.state.mtplx = state
-    install_runtime_systems_endpoint(app, state)
+    from mtplx.server.runtime_status import ServingStatusProvider
+
+    if getattr(state, "runtime_systems", None) is None:
+        state.runtime_systems = RuntimeSystemsRegistry()
+    serving_status = ServingStatusProvider(state)
+    install_runtime_systems_endpoint(app, state, refresh=serving_status.publish)
     # Registered before the auth middleware below so auth stays outermost
     # (the most recently added Starlette middleware runs first): fans only
     # ramp for requests that passed the API-key and rate-limit gates.
@@ -29770,6 +30138,11 @@ def create_app(state: ServerState) -> FastAPI:
                     "created": now,
                     "owned_by": "mtplx",
                     "capability": "chat",
+                    "supports_vision": _server_vision_spec(state) is not None,
+                    "modalities": {
+                        "input": ["text", "image"] if _server_vision_spec(state) is not None else ["text"],
+                        "output": ["text"],
+                    },
                     "context_length": state.context_window,
                     "max_context_length": state.context_window,
                     "max_model_len": state.context_window,
@@ -29919,6 +30292,7 @@ def create_app(state: ServerState) -> FastAPI:
     async def chat_completions(
         raw_request: Request, request: ChatCompletionRequest
     ) -> Any:
+        request_received_monotonic_s = time.perf_counter()
         if not request.messages:
             raise HTTPException(status_code=400, detail="messages must not be empty")
         if bool(request.logprobs) or int(request.top_logprobs or 0) > 0:
@@ -30018,6 +30392,15 @@ def create_app(state: ServerState) -> FastAPI:
         read_only_force_answer_contract_active = (
             policy.read_only_force_answer_contract_active
         )
+        suppress_stream_tool_preamble = bool(
+            request.stream and tools_active and not read_only_force_answer_contract_active
+            and _is_hermes_client(headers=headers, metadata=metadata)
+        )
+        # The cache producer and next-turn reader must normalize exactly what
+        # the wire translator removes. Hermes suppresses these preambles too;
+        # comparing its empty echo to the raw preamble rejected the whole
+        # committed reasoning turn and re-prefilled tens of thousands of tokens.
+        strip_tool_call_preamble_text = opencode_client or suppress_stream_tool_preamble
         no_tools_contract_active = policy.no_tools_contract_active
         post_tool_answer_contract_active = policy.post_tool_answer_contract_active
         pi_convergence_contract_active = policy.pi_convergence_contract_active
@@ -30121,6 +30504,7 @@ def create_app(state: ServerState) -> FastAPI:
         )
         resolved_session_id: str | None = None
         resolved_session_source: str | None = None
+        resolved_session_diagnostic: dict[str, Any] = {}
         early_postcommit_handled = False
         early_postcommit_wait: dict[str, Any] | None = None
         early_cross_session_yield: dict[str, Any] | None = None
@@ -30147,6 +30531,7 @@ def create_app(state: ServerState) -> FastAPI:
                         chat_id=_request_extra(request, "chat_id"),
                         conversation_id=_request_extra(request, "conversation_id"),
                         prompt_ids=prompt_ids,
+                        diagnostic_out=resolved_session_diagnostic,
                     )
                 )
             except Exception:
@@ -30214,7 +30599,7 @@ def create_app(state: ServerState) -> FastAPI:
                 # some branches; the outcome rides template_observability,
                 # which merges into the request stream downstream.
                 transcript_stats=policy.transcript_stats,
-                strip_tool_call_preamble_text=opencode_client,
+                strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                 session_id=resolved_session_id,
             )
             if _canonicalized is not None:
@@ -30356,6 +30741,7 @@ def create_app(state: ServerState) -> FastAPI:
             request_generation_mode=request_generation_mode,
             request_depth=request_depth,
         )
+        request_observability["request_received_monotonic_s"] = request_received_monotonic_s
         if constraint_spec is not None:
             request_observability["constrained_decoding"] = constraint_spec.source_type
         if vision_splice is not None:
@@ -30462,7 +30848,17 @@ def create_app(state: ServerState) -> FastAPI:
                     chat_id=_request_extra(request, "chat_id"),
                     conversation_id=_request_extra(request, "conversation_id"),
                     prompt_ids=prompt_ids,
+                    diagnostic_out=resolved_session_diagnostic,
                 )
+            if vision_cache_keying and session_source in {
+                "new", "longest_prefix", "pending_postcommit_near_prefix", "common_prefix_reuse"
+            }:
+                bank_session_id = _vision_bank_session_id(
+                    state.sessions.bank, prompt_ids, vision_splice
+                )
+                if bank_session_id:
+                    session_id, session_source = bank_session_id, "vision_bank_prefix"
+                    resolved_session_diagnostic.clear()
             session = state.sessions.get_or_create(session_id)
             session.last_cache_miss_reason = cache_miss_reason
             session.last_restore_mode = session_restore_mode
@@ -30495,10 +30891,9 @@ def create_app(state: ServerState) -> FastAPI:
             _record_tool_parse_event(state, event="tool_template_fallback")
         if request_observability.get("request_client_hint") == "android_studio":
             _record_tool_parse_event(state, event="android_studio_request_detected")
-        prefix_diagnostic = getattr(state.sessions, "last_prefix_diagnostic", None)
-        if isinstance(prefix_diagnostic, dict):
+        if resolved_session_diagnostic:
             request_observability["request_session_prefix_diagnostic"] = (
-                prefix_diagnostic
+                resolved_session_diagnostic
             )
         session_keep_live_ref = _session_keep_live_refs_for_request(
             session_source=session_source,
@@ -30781,7 +31176,7 @@ def create_app(state: ServerState) -> FastAPI:
                 reasoning_effort=reasoning_effort,
                 tool_specs=postcommit_tool_specs,
                 tool_prompt_mode=postcommit_tool_prompt_mode,
-                strip_tool_call_preamble_text=opencode_client,
+                strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                 session=session,
             )
             if compatibility.get("safe"):
@@ -30835,7 +31230,7 @@ def create_app(state: ServerState) -> FastAPI:
                         expected_session_revision=getattr(session, "revision", None),
                         keep_live_ref=session_keep_live_ref,
                         tool_prompt_mode=postcommit_tool_prompt_mode,
-                        strip_tool_call_preamble_text=opencode_client,
+                        strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                         committed_stream_ids=postcommit_committed_stream,
                     )
                 )
@@ -30855,7 +31250,7 @@ def create_app(state: ServerState) -> FastAPI:
                         tool_specs=postcommit_tool_specs,
                         keep_live_ref=session_keep_live_ref,
                         tool_prompt_mode=postcommit_tool_prompt_mode,
-                        strip_tool_call_preamble_text=opencode_client,
+                        strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                         committed_stream_ids=postcommit_committed_stream,
                     ),
                     batch_key=f"postcommit.inline:{session_id or 'stateless'}",
@@ -31076,10 +31471,7 @@ def create_app(state: ServerState) -> FastAPI:
                         repair_unclosed_complete=(
                             str(raw_request.url.path or "") != "/v1/messages"
                         ),
-                        suppress_tool_call_preamble=_is_hermes_client(
-                            headers=headers,
-                            metadata=metadata,
-                        ),
+                        suppress_tool_call_preamble=suppress_stream_tool_preamble,
                     )
                     # Forced final-answer turns stream sanitized visible text
                     # through the buffered marker path; the tool-call
@@ -32052,7 +32444,7 @@ def create_app(state: ServerState) -> FastAPI:
                                     assistant_history_content = str(
                                         commit_state.get("assistant_history_content")
                                         or ""
-                                    ) or (
+                                    ) if "assistant_history_content" in commit_state else (
                                         _normalize_reasoning_tags_for_state(
                                             state,
                                             str(generated["text"]),
@@ -32089,7 +32481,7 @@ def create_app(state: ServerState) -> FastAPI:
                                                 tool_specs=postcommit_tool_specs,
                                                 keep_live_ref=session_keep_live_ref,
                                                 tool_prompt_mode=postcommit_tool_prompt_mode,
-                                                strip_tool_call_preamble_text=opencode_client,
+                                                strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                                                 committed_stream_ids=(
                                                     stream_committed_stream
                                                 ),
@@ -32122,7 +32514,7 @@ def create_app(state: ServerState) -> FastAPI:
                                             tool_specs=postcommit_tool_specs,
                                             keep_live_ref=session_keep_live_ref,
                                             tool_prompt_mode=postcommit_tool_prompt_mode,
-                                            strip_tool_call_preamble_text=opencode_client,
+                                            strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                                         )
                                         generated["stats"][
                                             "session_postcommit_snapshot"
@@ -32159,7 +32551,7 @@ def create_app(state: ServerState) -> FastAPI:
                                                     tool_specs=postcommit_tool_specs,
                                                     keep_live_ref=session_keep_live_ref,
                                                     tool_prompt_mode=postcommit_tool_prompt_mode,
-                                                    strip_tool_call_preamble_text=opencode_client,
+                                                    strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                                                 )
                                             ),
                                             batch_key=(
@@ -33676,10 +34068,14 @@ def create_app(state: ServerState) -> FastAPI:
                                         if assistant_tool_calls
                                         else "postcommit_prompt_prefix"
                                     )
-                                    if read_only_force_answer_contract_active:
+                                    if read_only_force_answer_contract_active or vision_splice is not None:
                                         prompt_prefix_commit_info = {
                                             "committed": False,
-                                            "reason": "transient_generation_contract",
+                                            "reason": (
+                                                "vision_session_frontier_skip"
+                                                if vision_splice is not None
+                                                else "transient_generation_contract"
+                                            ),
                                             "prefix_len": int(
                                                 getattr(session, "prefix_len", 0) or 0
                                             ),
@@ -33771,7 +34167,7 @@ def create_app(state: ServerState) -> FastAPI:
                                             ),
                                             keep_live_ref=session_keep_live_ref,
                                             tool_prompt_mode=postcommit_tool_prompt_mode,
-                                            strip_tool_call_preamble_text=opencode_client,
+                                            strip_tool_call_preamble_text=strip_tool_call_preamble_text,
                                             committed_stream_ids=[
                                                 int(token) for token in prompt_ids
                                             ]
@@ -35590,6 +35986,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Unload retrieval models after this many idle seconds (0 = never)",
     )
     parser.add_argument(
+        "--stream-stall-deadline-s",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Fail a stream whose model owner makes no progress for this many "
+            "seconds (0 = off). Default: $MTPLX_STREAM_STALL_DEADLINE_S or 300. "
+            "Healthy work ticks progress on every prefill chunk and decode "
+            "step, so only a genuinely parked owner reaches the deadline."
+        ),
+    )
+    parser.add_argument(
         "--retrieval-cache-dir",
         default=None,
         help="Model cache directory used to resolve retrieval references",
@@ -36348,6 +36756,7 @@ def _start_aime_parent_watchdog_from_env() -> None:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     validate_server_security_args(args)
+    set_stream_stall_deadline_s(getattr(args, "stream_stall_deadline_s", None))
     _start_aime_parent_watchdog_from_env()
     try:
         state = ServerState(args)

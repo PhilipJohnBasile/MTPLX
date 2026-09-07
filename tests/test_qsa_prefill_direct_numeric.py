@@ -11,6 +11,7 @@ results.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -257,54 +258,39 @@ def test_early_prefix_matches_gather_with_upstream_bound(native_lane):
     assert err <= _EARLY_BOUND, err
 
 
-def test_missing_metallib_fails_preflight_in_a_fresh_process(native_lane):
+def test_missing_metallib_fails_preflight_in_a_fresh_process(native_lane, tmp_path):
     """FAILED is process-wide, so this drill cannot share the pytest process."""
 
-    ext_dir = Path(direct.__file__).resolve().parents[2] / "native_extensions" / "qsa_kernels"
-    metallibs = list((ext_dir / "mtplx_qsa_kernels").glob("*.metallib"))
+    ext_dir = Path(direct._EXT.__file__).resolve().parent
+    metallibs = list(ext_dir.glob("*.metallib"))
     assert metallibs, f"no metallib next to the extension in {ext_dir}"
-    metallib = metallibs[0]
+    # Exercise the installed artifact, without hiding files from a live
+    # runtime or assuming that an in-place source build exists.
+    shutil.copytree(ext_dir, tmp_path / "mtplx_qsa_kernels",
+                    ignore=shutil.ignore_patterns("*.metallib"))
     child = r"""
-import os, sys, traceback
+import os, sys
+sys.path.insert(0, os.environ["MTPLX_TEST_NATIVE"])
+import mlx.core as mx
+import mtplx_qsa_kernels
+assert mtplx_qsa_kernels.__file__.startswith(os.environ["MTPLX_TEST_NATIVE"])
 sys.path.insert(0, os.environ["MTPLX_SRC"])
-# Hide the metallib before the extension's first eval.
-src = os.environ["METALLIB"]
-dst = src + ".hidden"
-os.rename(src, dst)
-try:
-    import mlx.core as mx  # noqa: F401
-    from mtplx.kernels.qsa_prefill_direct import (
-        qsa_prefill_direct_preflight,
-        qsa_prefill_direct_ready,
-    )
-    ok = qsa_prefill_direct_preflight()
-    ready = qsa_prefill_direct_ready()
-    print(f"preflight={ok} ready={ready}")
-    sys.exit(0 if (ok is False and ready is False) else 2)
-except Exception:
-    traceback.print_exc()
-    sys.exit(2)
-finally:
-    if os.path.exists(dst) and not os.path.exists(src):
-        os.rename(dst, src)
+from mtplx.kernels import qsa_prefill_direct as direct
+assert direct._EXT is not None, direct._IMPORT_ERROR
+ok = direct.qsa_prefill_direct_preflight()
+ready = direct.qsa_prefill_direct_ready()
+print(f"preflight={ok} ready={ready}")
+sys.exit(0 if (ok is False and ready is False) else 2)
 """
     env = os.environ.copy()
     src_root = str(Path(direct.__file__).resolve().parents[2])
     env["MTPLX_SRC"] = src_root
-    env["METALLIB"] = str(metallib)
+    env["MTPLX_TEST_NATIVE"] = str(tmp_path)
     env["PYTHONPATH"] = src_root + os.pathsep + env.get("PYTHONPATH", "")
-    hidden = Path(str(metallib) + ".hidden")
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-c", child],
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    finally:
-        if hidden.is_file() and not metallib.is_file():
-            hidden.rename(metallib)
-    assert metallib.is_file(), "child must restore the metallib"
+    proc = subprocess.run(
+        [sys.executable, "-c", child], env=env, capture_output=True,
+        text=True, timeout=120,
+    )
+    assert all(p.is_file() for p in metallibs), "installed artifact must remain intact"
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "preflight=False ready=False" in proc.stdout

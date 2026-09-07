@@ -838,16 +838,30 @@ public struct HermesIntegration: Sendable {
         // not own (memory/providers/delegation/…), so the template is merged
         // over the existing file instead: app-owned keys are rewritten, all
         // other content is preserved byte-for-byte.
-        let existingConfigText = try? String(contentsOf: configURL, encoding: .utf8)
+        let existingConfigText = FileManager.default.fileExists(atPath: configURL.path)
+            ? try String(contentsOf: configURL, encoding: .utf8) : nil
+        var seededConfigText = existingConfigText
+        if !Self.profileDeclaresTerminalBackend(existingConfigText) {
+            // The root config is read only when a terminal policy has to be
+            // inherited (#460): a profile with its own backend never depends
+            // on it, so an unreadable root cannot fail that profile's launch.
+            // When inheritance is needed, an unreadable root is a thrown
+            // error rather than a silently dropped sandbox choice.
+            let rootConfigURL = hermesHome.appendingPathComponent("config.yaml")
+            let rootConfigText = FileManager.default.fileExists(atPath: rootConfigURL.path)
+                ? try String(contentsOf: rootConfigURL, encoding: .utf8) : nil
+            seededConfigText = Self.inheritTerminalConfig(existing: existingConfigText, root: rootConfigText)
+        }
         let configText = Self.mergedConfigYAML(
-            existing: existingConfigText,
+            existing: seededConfigText,
             template: Self.configYAML(
                 modelID: modelID,
                 baseURL: baseURL,
                 apiKey: apiKey,
                 workspacePath: workspacePath,
                 showReasoning: reasoning != "off",
-                reasoningEffort: reasoningEffort
+                reasoningEffort: reasoningEffort,
+                vision: MTPLXModelOption.supportsVision(model: configuration.model)
             )
         )
         let envText = Self.dotenv(
@@ -1457,7 +1471,8 @@ public struct HermesIntegration: Sendable {
         apiKey: String,
         workspacePath: String,
         showReasoning: Bool,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        vision: Bool
     ) -> String {
         // SYNC PAIR: public.py _hermes_config_yaml — both writers must emit
         // the same template shape or the shared merge sweeps each other's
@@ -1466,7 +1481,10 @@ public struct HermesIntegration: Sendable {
         // server branch (tool contract, managed-thinking carve-out,
         // injected-cap strip) is dead. Reasoning effort must sit under
         // agent: — hermes reads CLI_CONFIG["agent"]["reasoning_effort"]; a
-        // model.reasoning_effort line is silently ignored.
+        // model.reasoning_effort line is silently ignored. terminal.backend
+        // is deliberately absent: it is the user's sandbox choice (hermes
+        // defaults it to local) and the merge preserves a user-set value
+        // (issue #460).
         let effortLine = reasoningEffort.map { "  reasoning_effort: \(yamlQuote($0))\n" } ?? ""
         let showReasoningText = showReasoning ? "true" : "false"
         return """
@@ -1476,6 +1494,8 @@ public struct HermesIntegration: Sendable {
           base_url: \(yamlQuote(baseURL))
           api_key: \(yamlQuote(apiKey))
           api_mode: chat_completions
+          supports_vision: \(vision ? "true" : "false")
+          reasoning_echo: true
           default_headers:
             x-mtplx-client: hermes
         toolsets:
@@ -1490,10 +1510,11 @@ public struct HermesIntegration: Sendable {
           tool_use_enforcement: auto
         """ + "\n" + effortLine + """
         terminal:
-          backend: local
           cwd: \(yamlQuote(workspacePath))
           timeout: 180
           persistent_shell: true
+        compression:
+          tool_image_retention: until_compaction
         display:
           streaming: true
           show_reasoning: \(showReasoningText)
@@ -1544,6 +1565,29 @@ public struct HermesIntegration: Sendable {
     /// The child-key scan assumes the template's own two-space indentation,
     /// which is what the app has always written; user files started from our
     /// template keep that shape.
+    /// Inherit the root execution policy only when the profile has no backend.
+    /// Provider credentials and other root sections stay outside this profile.
+    /// True when the profile config sets `terminal.backend` itself.
+    static func profileDeclaresTerminalBackend(_ existing: String?) -> Bool {
+        guard let terminal = parseTopLevelBlocks(existing ?? "").blocks
+            .first(where: { $0.keyName == "terminal" }) else { return false }
+        return directChildBlocks(of: terminal).contains(where: { $0.key == "backend" })
+    }
+
+    static func inheritTerminalConfig(existing: String?, root: String?) -> String? {
+        guard let root, !profileDeclaresTerminalBackend(existing) else { return existing }
+        guard let terminal = parseTopLevelBlocks(root).blocks.first(where: { $0.keyName == "terminal" }) else {
+            return existing
+        }
+        let body = Array(terminal.lines.dropFirst())
+        let indent = body.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { $0.prefix(while: { $0 == " " }).count }.min() ?? 0
+        let normalized = body.map { $0.isEmpty ? "" : "  " + $0.dropFirst(indent) }
+        let seed = ([terminal.lines[0]] + normalized).joined(separator: "\n") + "\n"
+        guard let existing, !existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return seed }
+        return mergedConfigYAML(existing: seed, template: existing)
+    }
+
     static func mergedConfigYAML(existing: String?, template: String) -> String {
         guard
             let existing,
@@ -1695,7 +1739,11 @@ public struct HermesIntegration: Sendable {
         TERMINAL_CWD=\(dotenvQuote(workspacePath))
         """
         if let reasoningEffort {
-            text += "HERMES_MTPLX_REASONING_EFFORT=\(dotenvQuote(reasoningEffort))\n"
+            // The literal above ends without a newline: appending straight
+            // onto it fused TERMINAL_CWD and this key into one line, which
+            // Hermes' dotenv parser rejected ("could not parse statement"),
+            // silently dropping both the working directory and the effort.
+            text += "\nHERMES_MTPLX_REASONING_EFFORT=\(dotenvQuote(reasoningEffort))"
         }
         if !bridgeText.isEmpty {
             text += "\n" + bridgeText
