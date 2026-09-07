@@ -8,16 +8,24 @@ jobs:
   native:
     if: github.repository == 'PhilipJohnBasile/MTPLX'
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with: {path: audit, persist-credentials: false}
       - uses: actions/checkout@v4
         with: {ref: 0dec47d37001efa614d622cc933a6bd633633321, path: source, persist-credentials: false}
-      - name: Apply SDK and typed-dispatch fixes to the pinned PR head
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.11'}
+      - name: Install the exact source runtime used by native preflight
         working-directory: source
         run: |
           mkdir -p ../native-receipts
+          python -m pip install -q -e '.[dev,server]'
+          mtplx --version > ../native-receipts/runtime-version.txt
+          python -c 'import mlx.core; import mlx_lm; print("MLX runtime imports passed")' >> ../native-receipts/runtime-version.txt
+      - name: Apply SDK and typed-dispatch fixes to the pinned PR head
+        working-directory: source
+        run: |
           test "$(git rev-parse HEAD)" = 0dec47d37001efa614d622cc933a6bd633633321
           python3 ../audit/.review/native_fixes.py .
           python3 ../audit/.review/native_dispatch_fix.py .
