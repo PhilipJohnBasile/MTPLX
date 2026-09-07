@@ -1006,9 +1006,14 @@ public final class MTPLXBackendStore: ObservableObject {
         target: LaunchTarget?,
         launchID: String
     ) async {
-        let occupant = await PortPreflight.classify(
+        // Issue #409: a foreign-looking occupant is re-probed over the
+        // settle window before the port is moved — a draining MTPLX
+        // daemon (stop/start, or the predecessor of an in-app update)
+        // clears on its own and must never cost the user their port.
+        let occupant = await PortPreflight.classifySettled(
             baseURL: baseURL,
-            apiKey: configuration.apiKey
+            apiKey: configuration.apiKey,
+            settleTimeoutSeconds: portSettleTimeoutSeconds
         )
         let occupantDescription: String
         switch occupant {
@@ -1065,6 +1070,10 @@ public final class MTPLXBackendStore: ObservableObject {
         )
     }
 
+    /// How long a foreign-looking port is re-probed before it is moved
+    /// (issue #409). Tests shorten it; the product keeps the shared default.
+    var portSettleTimeoutSeconds: TimeInterval = PortPreflight.settleTimeoutSeconds
+
     /// Test seam: run the port pre-flight and report the resulting port and
     /// fallback notice as Sendable values.
     func preflightOutcomeForTest(
@@ -1087,9 +1096,10 @@ public final class MTPLXBackendStore: ObservableObject {
         launchID: String
     ) async -> Bool {
         let occupiedPort = configuration.port
-        let occupant = await PortPreflight.classify(
+        let occupant = await PortPreflight.classifySettled(
             baseURL: baseURL,
-            apiKey: configuration.apiKey
+            apiKey: configuration.apiKey,
+            settleTimeoutSeconds: portSettleTimeoutSeconds
         )
         switch occupant {
         case .mtplxServer, .unauthorized, .foreign:
@@ -1865,7 +1875,7 @@ public final class MTPLXBackendStore: ObservableObject {
 
     public func updateLiveSettings(_ next: MutableSettings) async throws {
         let merged = mergedLiveSettingsPatch(next)
-        let livePatch = Self.liveMutableSettingsPatch(from: next)
+        let livePatch = Self.liveSettingsUpdatePatch(from: next)
         // Only the caller's own patch counts as a depth choice; the
         // merged snapshot always carries the daemon's current depth.
         let depthIsExplicitSelection = next.depth != nil
@@ -1910,6 +1920,17 @@ public final class MTPLXBackendStore: ObservableObject {
         if persist && previous != daemonSettings {
             try? persistLiveSettings(daemonSettings)
         }
+    }
+
+    /// The patch a direct live update posts. It is the carried patch plus
+    /// the adaptive depth policy: the policy is live on the daemon that is
+    /// running now, but it is not carried into the next launch (the launch
+    /// arguments own it through `adaptiveDepth`), and a family that owns its
+    /// draft policy rejects the key, so the carry path leaves it out.
+    nonisolated static func liveSettingsUpdatePatch(from settings: MutableSettings) -> MutableSettings {
+        var patch = liveMutableSettingsPatch(from: settings)
+        patch.adaptivePolicy = settings.adaptivePolicy
+        return patch
     }
 
     nonisolated static func liveMutableSettingsPatch(from settings: MutableSettings) -> MutableSettings {

@@ -212,17 +212,17 @@ def _check_qwen_combine_tail_m1_m2(mx, dtype) -> float:
     return 0.0
 
 
-def _check_gqa_packed(mx, dtype) -> float:
+def _check_gqa_packed(mx, dtype, kernel=None, *, d=128, q_len=4) -> float:
     from .kernels.sdpa_gqa_packed import sdpa_gqa_packed_tail
 
-    hq, hk, d = 8, 2, 128
-    capacity, offset, q_len = 512, 200, 4
+    hq, hk = (24, 4) if d == 256 else (8, 2)
+    capacity, offset = 512, 200
     scale = d**-0.5
     mx.random.seed(11)
     queries = (mx.random.normal((1, hq, q_len, d), dtype=mx.float32) * 0.5).astype(dtype)
     keys = (mx.random.normal((1, hk, capacity, d), dtype=mx.float32) * 0.5).astype(dtype)
     values = (mx.random.normal((1, hk, capacity, d), dtype=mx.float32) * 0.5).astype(dtype)
-    out = sdpa_gqa_packed_tail(
+    out = (kernel or sdpa_gqa_packed_tail)(
         queries=queries,
         keys=keys,
         values=values,
@@ -665,6 +665,25 @@ def run_kernel_selfcheck(dtype, bits: int, group_size: int) -> dict[str, Any]:
         _record("gqa_packed_sdpa", _SDPA_TOLERANCE, lambda: _check_gqa_packed(mx, dtype))
     else:
         lanes["gqa_packed_sdpa"] = _STATUS_SKIPPED
+
+    # NAX attention has its own kernels: validating the scalar packed lane
+    # cannot certify these. Probe both physical geometries before serving,
+    # and retain the established packed route on non-G17 GPUs / older macOS.
+    from .kernels.sdpa_nax_flash import sdpa_nax_flash
+    from .kernels.sdpa_nax_flash_dsplit import sdpa_nax_flash_dsplit
+    from .kernels.sdpa_nax_tile import sdpa_nax_tile
+
+    for lane, env, kernel, rows in (
+        ("nax_flash_sdpa", "MTPLX_NAX_FLASH_ROUTE", sdpa_nax_flash, 8),
+        ("nax_flash_dsplit_sdpa", "MTPLX_NAX_FLASH_ROUTE", sdpa_nax_flash_dsplit, 4),
+        ("nax_tile_sdpa", "MTPLX_NAX_TILE_ROUTE", sdpa_nax_tile, 8),
+    ):
+        if _env_on("MTPLX_GQA_PACKED_SDPA") and _env_on(env) and nax_verify.nax_available():
+            _record(lane, _SDPA_TOLERANCE,
+                    lambda kernel=kernel, rows=rows: _check_gqa_packed(
+                        mx, dtype, kernel, d=256, q_len=rows))
+        else:
+            lanes[lane] = _STATUS_SKIPPED
 
     if _env_on("MTPLX_FUSE_POST_NORM_RESIDUAL"):
         # Bitwise gate: this lane's contract is exact identity with the

@@ -205,6 +205,50 @@ if [[ ! -x "$PBS_EXTRACT_DIR/bin/python3" ]]; then
   exit 1
 fi
 
+# Build the optional sparse-prefill consumer for the exact bundled Python.
+# Keep the pure wheel beside it: pip/app tag selection declines this binary
+# on older macOS or a different Python ABI rather than breaking installation.
+NATIVE_BUILD_VENV="$OUT_ROOT/native-build-venv"
+NATIVE_DIST="$OUT_ROOT/native-wheels"
+"$PBS_EXTRACT_DIR/bin/python3" -m venv "$NATIVE_BUILD_VENV"
+"$NATIVE_BUILD_VENV/bin/python" -m pip install \
+  build wheel setuptools 'cmake>=3.27' 'mlx==0.32.2' 'nanobind==2.15.0'
+MACOSX_DEPLOYMENT_TARGET=15.0 "$NATIVE_BUILD_VENV/bin/python" -m build \
+  --wheel --no-isolation "$ROOT/native_extensions/qsa_kernels" --outdir "$NATIVE_DIST"
+NATIVE_WHEELS=("$NATIVE_DIST"/mtplx_qsa_kernels-*.whl)
+if [[ "${#NATIVE_WHEELS[@]}" != "1" || ! -f "${NATIVE_WHEELS[0]}" ]]; then
+  echo "error: expected exactly one native QSA wheel" >&2
+  exit 1
+fi
+NATIVE_RUNTIME_WHEEL="$("$NATIVE_BUILD_VENV/bin/python" \
+  "$ROOT/scripts/bundle_native_runtime_wheel.py" "$PYTHON_WHEEL" \
+  "${NATIVE_WHEELS[0]}" --out "$PYTHON_DIST" --codesign-identity "$CODESIGN_IDENTITY")"
+"$PYTOOLS_VENV/bin/python" -m twine check "$NATIVE_RUNTIME_WHEEL"
+
+# Notarization gate: every Mach-O inside the runtime wheel must carry the
+# Developer ID and a secure timestamp. The app's signing pass cannot reach
+# into the wheel, and the notary service rejected 2.11.2's first submission
+# on exactly these two files; catch it here, not after a 20-minute upload.
+NATIVE_CHECK_DIR="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/mtplx-native-wheel-check.XXXXXX")"
+/usr/bin/unzip -q -o "$NATIVE_RUNTIME_WHEEL" -d "$NATIVE_CHECK_DIR"
+NATIVE_SIGNED=0
+while IFS= read -r member; do
+  [[ -n "$member" ]] || continue
+  /usr/bin/codesign --verify --strict "$member"
+  details="$(/usr/bin/codesign -dvvv "$member" 2>&1)"
+  if ! /usr/bin/grep -q 'Authority=Developer ID Application' <<<"$details" \
+     || ! /usr/bin/grep -q '^Timestamp=' <<<"$details"; then
+    echo "error: ${member#"$NATIVE_CHECK_DIR"/} is not Developer ID signed with a secure timestamp; notarization would reject it" >&2
+    exit 1
+  fi
+  NATIVE_SIGNED=$((NATIVE_SIGNED + 1))
+done < <(/usr/bin/find "$NATIVE_CHECK_DIR" \( -name '*.so' -o -name '*.dylib' \) -type f)
+if [[ "$NATIVE_SIGNED" -lt 2 ]]; then
+  echo "error: expected the QSA extension and its kernel library inside $NATIVE_RUNTIME_WHEEL, found $NATIVE_SIGNED signed Mach-O files" >&2
+  exit 1
+fi
+echo "Native runtime wheel: $NATIVE_SIGNED Mach-O members Developer ID signed with secure timestamps"
+
 echo "Building signed MTPLX.app"
 MTPLX_APP_PUBLIC_RELEASE=1 \
 MTPLX_APP_VERSION="$VERSION" \
@@ -212,6 +256,7 @@ MTPLX_APP_BUILD="$APP_BUILD" \
 MTPLX_APP_BUNDLE_DIR="$APP_BUNDLE" \
 MTPLX_APP_EMBED_LOCAL_RUNTIME_WRAPPER=0 \
 MTPLX_RUNTIME_WHEEL="$PYTHON_WHEEL" \
+MTPLX_NATIVE_RUNTIME_WHEEL="$NATIVE_RUNTIME_WHEEL" \
 MTPLX_REQUIRE_RUNTIME_WHEEL_RESOURCE=1 \
 MTPLX_BUNDLED_PYTHON_DIR="$PBS_EXTRACT_DIR" \
 MTPLX_REQUIRE_BUNDLED_PYTHON_RESOURCE=1 \

@@ -1122,11 +1122,11 @@ def _record_permanent_eager(reason: str, *, once: bool = False) -> None:
 # Process-global compiled verify callables, keyed by
 # (runtime id, capture backend, state spec, verify length, hidden variant,
 # bucket). The bank is per-generation; without sharing, every request pays a
-# fresh trace. Values are (compiled_fn, trace_host) where trace_host["bank"]
-# is re-pointed to the live bank before each dispatch so internal retraces
+# fresh trace. Values are (compiled_fn, trace_host, runtime_ref), where the
+# host's WEAK bank reference is re-pointed before each dispatch so retraces
 # (mx.compile re-traces on leaf-shape changes) always use live scratch
 # containers. See CompiledVerifyBank._shared_or_new_verify_step.
-_SHARED_VERIFY_STEPS: dict[tuple, tuple[Any, dict[str, Any]]] = {}
+_SHARED_VERIFY_STEPS: dict[tuple, tuple[Any, dict[str, Any], Any]] = {}
 
 
 def _prewarm_enabled() -> bool:
@@ -1999,26 +1999,31 @@ class CompiledVerifyBank:
                 flush=True,
             )
 
-    def _transition_fixed_m4_generation(
+    def reserve_fixed_m4_window(
         self,
         cache: Any,
         *,
-        committed_count: int,
+        committed_count: int | None = None,
+        window_tokens: int = 4,
     ) -> None:
-        """Grow or reroute one installed fixed-M4 capacity generation.
+        """Reserve every target write into an installed fixed-capacity bank.
 
-        The decision is host-owned: ``committed_count`` advances with the
-        accepted completion prefix, so this boundary check never evaluates a
-        device offset. Within a generation, replay stays branch-free.
+        D1/D2 and copy windows use these same buffers even when their forward
+        runs eager. They must renew capacity before writing, too. Generation
+        supplies its host ledger to avoid a device sync; standalone callers
+        without that ledger use the live cache offset. Generic banks are
+        unchanged. Keep four rows reserved for a possible lazy bonus write.
         """
 
         dispatch = self._fixed_m4_dispatch
-        assert dispatch is not None
-        required_end = (
-            int(dispatch["base_offset"])
-            + max(0, int(committed_count))
-            + 4
+        if dispatch is None:
+            return
+        logical_start = (
+            int(dispatch["base_offset"]) + max(0, int(committed_count))
+            if committed_count is not None
+            else dispatch["qsa_entries"][0].size()
         )
+        required_end = logical_start + max(4, int(window_tokens))
         capacity_needed = required_end > int(dispatch["capacity"])
         route_transition_at = dispatch["route_transition_at"]
         route_needed = (
@@ -2107,7 +2112,7 @@ class CompiledVerifyBank:
     ):
         dispatch = self._fixed_m4_dispatch
         assert dispatch is not None
-        self._transition_fixed_m4_generation(
+        self.reserve_fixed_m4_window(
             cache,
             committed_count=committed_count,
         )
@@ -2221,6 +2226,7 @@ class CompiledVerifyBank:
         return_hidden: bool = True,
         hidden_variant: str | None = None,
         extended_window: bool = False,
+        committed_count: int | None = None,
     ):
         """Compiled verify dispatch.
 
@@ -2241,6 +2247,11 @@ class CompiledVerifyBank:
         global _PREWARM_DONE
         if self._fixed_m4_dispatch is not None:
             self.stats["calls"] += 1
+            self.reserve_fixed_m4_window(
+                cache,
+                committed_count=committed_count,
+                window_tokens=_decode_length(input_ids),
+            )
             if _decode_length(input_ids) == 4:
                 # Without host-owned n-gram inputs (any caller other than the
                 # generation loop's forward_fixed_m4 entrypoint, for example a
@@ -3249,14 +3260,26 @@ class CompiledVerifyBank:
             # id() can be recycled after a model swap frees the old runtime;
             # a stale callable would replay graphs bound to freed weights.
             if runtime_ref() is self.runtime:
-                host["bank"] = self
+                host["bank_ref"] = weakref.ref(self)
                 return fn
             _SHARED_VERIFY_STEPS.pop(global_key, None)
-        host = {"bank": self}
+        # Programs may outlive requests. Keeping the bank here also keeps its
+        # shadow KV and traced state alive after the request/session is gone.
+        # The dispatch owns the bank; the process cache owns only the program.
+        host = {"bank_ref": weakref.ref(self)}
         fn = mx.compile(
             self._make_verify_step(length, hidden_variant, trace_host=host)
         )
-        _SHARED_VERIFY_STEPS[global_key] = (fn, host, weakref.ref(self.runtime))
+        def release_program(reference, *, key=global_key):
+            # Compiled graphs may hold weight arrays even after their Python
+            # runtime is gone. Drop them at unload, not only on id() reuse.
+            entry = _SHARED_VERIFY_STEPS.get(key)
+            if entry is not None and entry[2] is reference:
+                _SHARED_VERIFY_STEPS.pop(key, None)
+
+        _SHARED_VERIFY_STEPS[global_key] = (
+            fn, host, weakref.ref(self.runtime, release_program)
+        )
         return fn
 
     def _make_verify_step(
@@ -3267,15 +3290,14 @@ class CompiledVerifyBank:
     ):
         spec = list(self._spec or [])
         layout = self._capture_layout()
-        bank = self
-        static_host = {"bank": self}
+        static_host = {"bank_ref": weakref.ref(self)}
         host = trace_host if trace_host is not None else static_host
-
-        del bank
 
         def verify_step(input_ids, *args):
             # Python body executes at trace time only; replays skip it.
-            live = host["bank"]
+            live = host["bank_ref"]()
+            if live is None:
+                raise RuntimeError("compiled verifier traced without a live request bank")
             shadow = live._shadow
             if live._prepare_compiled_aux is not None:
                 compiled_aux, *state_in = args

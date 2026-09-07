@@ -74,6 +74,9 @@ export const MTPLXSessionHeaders = async () => ({
     if (input?.sessionID) {
       output.headers["x-mtplx-session-id"] = String(input.sessionID);
     }
+    if (input?.message?.id) {
+      output.headers["x-mtplx-client-turn-id"] = String(input.message.id);
+    }
   },
   "chat.params": async (input, output) => {
     const providerID = mtplxProviderID(input);
@@ -270,6 +273,7 @@ def build_opencode_provider_config(
     top_k: int | None = None,
     reasoning_effort: str | None = None,
     reasoning_effort_levels: Sequence[str] | None = None,
+    vision: bool = False,
 ) -> dict[str, Any]:
     """Build the OpenCode provider/config fragment MTPLX owns.
 
@@ -314,7 +318,7 @@ def build_opencode_provider_config(
             "output": output,
         },
         "modalities": {
-            "input": ["text"],
+            "input": ["text", "image"] if vision else ["text"],
             "output": ["text"],
         },
     }
@@ -755,6 +759,7 @@ def write_opencode_config(
     top_k: int = 20,
     reasoning_effort: str | None = None,
     reasoning_effort_levels: Sequence[str] | None = None,
+    vision: bool = False,
 ) -> dict[str, Any]:
     """Write MTPLX into OpenCode config and return a handoff payload."""
 
@@ -783,6 +788,7 @@ def write_opencode_config(
         top_k=top_k,
         reasoning_effort=reasoning_effort,
         reasoning_effort_levels=reasoning_effort_levels,
+        vision=vision,
     )
     config_path.parent.mkdir(parents=True, exist_ok=True)
     session_headers_plugin_path = write_opencode_session_headers_plugin(config_path)

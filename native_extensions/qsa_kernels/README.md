@@ -46,6 +46,37 @@ PY
 `otool -L mtplx_qsa_kernels/_ext*.so` must resolve `libmlx.dylib` to the mlx
 wheel in this venv, not to a build-tree absolute path.
 
+## Release artifacts
+
+`scripts/bundle_native_runtime_wheel.py` combines a pure MTPLX wheel and
+this extension's wheel into one platform-tagged MTPLX wheel. It verifies
+both input RECORDs, preserves the native licenses and NOTICE, records the
+input hashes, and carries the exact MLX runtime dependency into the result.
+The ordinary pure wheel remains available for unsupported Python/OS cells.
+
+The macOS release script builds with the app's bundled Python and a macOS15
+deployment target. The app carries the pure wheel in `Runtime/` and the
+native wheel in `Runtime/Native/`. `select_runtime_wheel.py` uses the actual
+venv's Python, ABI and macOS tags to choose between them; the app's installed
+fingerprint follows that selected artifact. macOS14 retains the pure wheel.
+This packaging does not establish performance on an unmeasured GPU family.
+
+The app installer can be exercised without opening its UI. Set
+`MTPLX_QA_WHEEL` to the staged pure wheel (with `Native/` and the selector
+beside it), `MTPLX_QA_PYTHON` to the bundled Python, and `MTPLX_QA_HOME` to
+a new, isolated test directory. Then run:
+
+```sh
+swift test --package-path apps/MTPLXApp \
+  --filter RuntimeBundledArtifactTests.testFreshArtifactInstallAndReuse
+```
+
+`MTPLX_QA_EXPECT_WHEEL` optionally asserts the selected wheel's filename.
+The test installs through the production bootstrapper, verifies its health
+and fingerprint, checks reuse, and preserves an `artifact-install-receipt.json`
+in the test directory. It skips when the three required inputs are absent.
+Run native pipeline/model checks under the project's verified fan procedure.
+
 ## Things that break it
 
 * **nanobind drift.** `nanobind>=2` at the MTPLX root is a floor, not a pin.
@@ -56,8 +87,8 @@ wheel in this venv, not to a build-tree absolute path.
   it: `BUILT_AGAINST_MLX` is compared against the imported version at
   readiness, and a mismatch warns once and disables the lane, so the symptom
   is "the direct lane stopped engaging", not a crash. Rebuild here.
-  `pyproject.toml` pins the BUILD to `mlx==0.32.2` so a PEP 517 isolated
-  build cannot quietly pick a different 0.32.x than the serving venv holds.
+  Both build and native-wheel runtime metadata pin `mlx==0.32.2` so a
+  resolver cannot silently combine a different wheel with this extension.
 * **Metallib name or location.** The C++ resolves `mtplx_qsa_kernels` from the
   directory of the loaded `.so`. Renaming or moving either one turns a symbol
   that imports fine into an `mx.eval`-time pipeline failure. That is what

@@ -42,6 +42,20 @@ _TEXT_CAPTURE_MAX_CHARS = 4_000_000
 _TAIL_CHARS = 400
 _SAMPLE_INTERVAL_S = 1.0
 _TPS_WINDOW = 48
+_LIVE_FIELDS = (
+    ("accepted_by_depth", "acc"), ("drafted_by_depth", "drf"),
+    ("verify_calls", "vc"), ("verify_time_s", "vt"), ("draft_time_s", "dt"),
+    ("verify_forward_time_s", "vft"), ("verify_logits_eval_time_s", "vlt"),
+    ("verify_hidden_eval_time_s", "vht"),
+    ("verify_target_distribution_time_s", "vdt"),
+    ("verify_eval_unattributed_time_s", "vut"),
+    ("accept_time_s", "at"), ("commit_time_s", "ct"), ("repair_time_s", "rt"),
+    ("snapshot_time_s", "st"), ("bonus_time_s", "bt"),
+    ("capture_commit_time_s", "cct"), ("active_memory_bytes", "mem_active"),
+    ("cache_memory_bytes", "mem_cache"), ("peak_memory_bytes", "mem_peak"),
+    ("verify_route", "route"), ("compiled_verify_calls", "cv"),
+    ("eager_verify_calls", "evc"),
+)
 
 
 class FlightRecord:
@@ -309,18 +323,18 @@ class FlightRecorder:
             }
             depth = record.live_depth
             if depth:
-                for src, dst in (
-                    ("accepted_by_depth", "acc"),
-                    ("drafted_by_depth", "drf"),
-                    ("verify_time_s", "vt"),
-                    ("draft_time_s", "dt"),
-                ):
+                for src, dst in _LIVE_FIELDS:
                     value = depth.get(src)
-                    if value:
+                    if value is not None:
                         sample[dst] = (
                             round(value, 3) if isinstance(value, float) else value
                         )
             self._emit(sample)
+
+    def live_depth_snapshot(self, request_id: str) -> dict[str, Any]:
+        """Host-only counters for the dashboard, scoped to this request."""
+        record = self._records.get(request_id)
+        return dict(record.live_depth or {}) if record is not None else {}
 
     def live_depth_sink(self, request_id: str) -> Callable[[dict[str, Any]], None] | None:
         """Returns the model-owner-thread publisher for by-depth totals, or
@@ -364,14 +378,9 @@ class FlightRecorder:
                 # stall. trace derives its curve from gen deltas regardless.
                 sample["tps"] = round(record.tps_window(), 2)
                 sample["tps_avg"] = round(record.tps_avg(now), 2)
-            for src, dst in (
-                ("accepted_by_depth", "acc"),
-                ("drafted_by_depth", "drf"),
-                ("verify_time_s", "vt"),
-                ("draft_time_s", "dt"),
-            ):
+            for src, dst in _LIVE_FIELDS:
                 value = payload.get(src)
-                if value:
+                if value is not None:
                     sample[dst] = round(value, 3) if isinstance(value, float) else value
             self._emit(sample)
 
