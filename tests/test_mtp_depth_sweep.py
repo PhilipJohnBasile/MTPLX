@@ -3,6 +3,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from mtplx.benchmarks.runners import mtp_depth_sweep
+import pytest
+
+
+def test_draft_cycle_mean_uses_proposals_when_event_recording_is_disabled():
+    # Actual installed-artifact tune receipts had events=[] and incorrectly
+    # reported 333 / 370 accepted drafts per cycle from 512 generated tokens.
+    mean = mtp_depth_sweep._accepted_drafts_per_cycle
+    assert mean(333, [178, 178]) == pytest.approx(333 / 178)
+    assert mean(370, [139, 139, 138]) == pytest.approx(370 / 139)
+    assert mean(0, []) is None
+    assert mean(0, [0, 0]) is None
 
 
 def test_depth_sweep_uses_packaged_draft_lm_head_helper(monkeypatch, tmp_path) -> None:

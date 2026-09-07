@@ -14,11 +14,12 @@ import pytest
 from mtplx.kernels.sdpa_gqa_packed import sdpa_gqa_packed_tail
 from mtplx.kernels.sdpa_nax_flash import _nax_flash_kernel, sdpa_nax_flash
 from mtplx.kernels.sdpa_nax_flash_dsplit import sdpa_nax_flash_dsplit
+from mtplx.nax_verify import nax_available
 
 HQ, HKV, D = 24, 4, 256
 
 pytestmark = pytest.mark.skipif(
-    not mx.metal.is_available() or _nax_flash_kernel() is None,
+    not mx.metal.is_available() or not nax_available() or _nax_flash_kernel() is None,
     reason="TensorOps kernel unavailable on this toolchain",
 )
 

@@ -23,9 +23,8 @@ PI_LOCAL_API_KEY = "mtplx-local"
 PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent"
 PI_DEFAULT_CONTEXT_WINDOW = 131_072
 PI_DEFAULT_MAX_TOKENS: int | None = None
-# Pi serializes a 16,384 output ceiling for models whose metadata omits
-# maxTokens. The extension strips exactly this value; any other cap is a
-# deliberate client choice and must reach MTPLX intact.
+# Legacy Pi fallback when model metadata omits maxTokens. Configured models
+# pass their advertised value to the bridge instead of assuming this value.
 PI_INJECTED_DEFAULT_MAX_TOKENS = 16_384
 PI_REQUEST_POLICY_EXTENSION_NAME = "mtplx-request-policy.ts"
 # Connection identity MTPLX must keep correct for the integration to work at
@@ -64,11 +63,12 @@ def build_pi_request_policy_extension_source(
     model_id: str,
     *,
     uncapped: bool,
+    injected_max_tokens: int = PI_INJECTED_DEFAULT_MAX_TOKENS,
 ) -> str:
     """Build Pi's request/session bridge for the configured MTPLX model.
 
-    Pi defaults omitted ``maxTokens`` metadata to 16,384 and serializes that
-    default on every request. The extension removes only Pi's generated output
+    Pi serializes the model's advertised ``maxTokens`` (or its legacy default)
+    on every request. The extension removes only Pi's generated output
     ceiling for the exact MTPLX model while leaving explicit user caps alone.
     It also gives MTPLX Pi's real session id so prompt-cache reuse is stable.
     """
@@ -81,7 +81,7 @@ def build_pi_request_policy_extension_source(
 // the mtplx identifiers below are gone from it.
 const mtplxModelID = {model_literal};
 const mtplxUncapped = {uncapped_literal};
-const mtplxPiInjectedDefaultMaxTokens = {PI_INJECTED_DEFAULT_MAX_TOKENS};
+const mtplxPiInjectedDefaultMaxTokens = {int(injected_max_tokens)};
 
 export default function (pi: any) {{
   pi.on("before_provider_headers", (event: any, ctx: any) => {{
@@ -94,6 +94,8 @@ export default function (pi: any) {{
     event.headers["x-mtplx-session-id"] = String(
       ctx.sessionManager.getSessionId(),
     );
+    const leaf = ctx.sessionManager.getLeafId();
+    if (leaf) event.headers["x-mtplx-client-entry-id"] = String(leaf);
   }});
 
   pi.on("before_provider_request", (event: any) => {{
@@ -123,12 +125,15 @@ def write_pi_request_policy_extension(
     *,
     model_id: str,
     uncapped: bool,
+    injected_max_tokens: int = PI_INJECTED_DEFAULT_MAX_TOKENS,
     path: str | Path | None = None,
 ) -> Path:
     """Install the small Pi bridge owned by the MTPLX provider config."""
 
     extension_path = pi_request_policy_extension_path(path)
-    source = build_pi_request_policy_extension_source(model_id, uncapped=uncapped)
+    source = build_pi_request_policy_extension_source(
+        model_id, uncapped=uncapped, injected_max_tokens=injected_max_tokens,
+    )
     if extension_path.exists():
         try:
             current = extension_path.read_text(encoding="utf-8")
@@ -473,6 +478,7 @@ def write_pi_models_config(
     request_policy_extension_path = write_pi_request_policy_extension(
         model_id=model_id,
         uncapped=max_tokens is None,
+        injected_max_tokens=int(provider_config["models"][0]["maxTokens"]),
         path=config_path,
     )
     return {
