@@ -391,6 +391,23 @@ def test_probe_refuses_no_mtp_sources(tmp_path):
     assert payload["has_mtp_weights"] is False
 
 
+def test_probe_does_not_treat_runnable_qwen_trunk_as_mtp_evidence(tmp_path):
+    _write_json(tmp_path / "config.json", _mtp_config())
+    mx.save_safetensors(
+        str(tmp_path / "model.safetensors"),
+        {"model.language_model.layers.0.mlp.down_proj.weight": mx.zeros((1, 1))},
+    )
+
+    payload = forge.probe_source(str(tmp_path))
+
+    assert payload["verdict"] == "no_mtp_heads"
+    assert payload["forgeable"] is False
+    assert payload["has_mtp_weights"] is False
+    assert payload["runtime_compatibility"] == "native-ar-only-missing-mtp"
+    assert payload["diagnostic"] == "native-ar-only-missing-mtp"
+    assert "AR-only Forge" in payload["message"]
+
+
 def test_probe_refuses_config_only_mtp_sources(tmp_path):
     _write_json(
         tmp_path / "config.json",

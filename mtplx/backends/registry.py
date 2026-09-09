@@ -1766,14 +1766,7 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
             # A dir with no TRUNK weights at all is a different failure — no
             # model, not a missing head — and keeps a clean human refusal
             # instead of a FileNotFoundError deep in the loader.
-            try:
-                trunk_weights_exist = any(
-                    path.name != "mtp.safetensors"
-                    for path in Path(model_dir).glob("*.safetensors")
-                )
-            except OSError:
-                trunk_weights_exist = False
-            if not trunk_weights_exist:
+            if not _trunk_weights_present(inspection):
                 return CompatibilityVerdict(
                     tier=TIER_ARCH_COMPATIBLE_UNVERIFIED,
                     arch_id=detected_arch_id,
@@ -1807,8 +1800,9 @@ def compatibility_for_inspection(inspection: Any) -> CompatibilityVerdict:
                     "tensors (mtp.safetensors or embedded mtp.* / "
                     "language_model.mtp.* weights). mtp_heads not found -> "
                     "mtp_off: MTPLX will serve this model autoregressive, "
-                    "without speculative decode acceleration. Build and verify "
-                    "an MTP artifact with Forge for full speed."
+                    "without speculative decode acceleration. Speculative "
+                    "acceleration requires a checkpoint with compatible "
+                    "trained MTP weights; Forge cannot create missing heads."
                 ),
                 recommended_backend="qwen3_next",
                 recommended_profile=DEFAULT_PROFILE_NAME,

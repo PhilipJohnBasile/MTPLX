@@ -2318,6 +2318,50 @@ def test_hf_verified_contract_passes_metadata_gate(monkeypatch):
     assert result.runtime_contract_path == "/tmp/mtplx_runtime.json"
 
 
+@pytest.mark.parametrize("has_trunk", [True, False])
+def test_hf_qwen_declared_mtp_without_head_distinguishes_trunk(monkeypatch, has_trunk):
+    from mtplx import artifacts
+
+    # Nex-N2.5-mini declares one MTP layer but publishes only trunk/vision
+    # tensors. Remote shard evidence must not require a local download.
+    files = {"config.json", "model.safetensors.index.json"}
+    if has_trunk:
+        files.add("model-00001-of-00016.safetensors")
+    config = {
+        "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+        "model_type": "qwen3_5_moe",
+        "text_config": {
+            "model_type": "qwen3_5_moe_text",
+            "mtp_num_hidden_layers": 1,
+            "num_hidden_layers": 40,
+            "hidden_size": 2048,
+        },
+    }
+    monkeypatch.setattr(artifacts, "_hf_list_repo_files", lambda _: (files, None))
+
+    def fake_json(_repo_id, filename):
+        if filename == "config.json":
+            return config, "/tmp/config.json", None
+        assert filename == "mtplx_runtime.json"
+        return None, None, "404 Client Error: not found"
+
+    monkeypatch.setattr(artifacts, "_hf_download_json", fake_json)
+    monkeypatch.setattr(
+        artifacts,
+        "_hf_model_weight_keys",
+        lambda *_: (("model.language_model.layers.39.self_attn.q_proj.weight",), None),
+    )
+
+    result = inspect_model("nex-agi/Nex-N2.5-mini")
+
+    assert result.mtp.exists is False
+    assert result.compatibility["can_run"] is has_trunk
+    assert result.compatibility["mtp_supported"] == "no"
+    assert result.compatibility["runtime_compatibility"] == (
+        "native-ar-only-missing-mtp" if has_trunk else "missing-model-weights"
+    )
+
+
 def test_hf_llama_without_mtp_is_no_mtp(monkeypatch):
     from mtplx import artifacts
 

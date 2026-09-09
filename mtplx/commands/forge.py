@@ -437,8 +437,8 @@ def _probe_runtime_mtp_evidence(
     except Exception as exc:
         return False, str(exc), {}
     compatibility = getattr(inspection, "compatibility", {}) or {}
-    if bool(compatibility.get("can_run")):
-        return True, None, compatibility
+    # Runtime compatibility includes autoregressive trunks without a draft
+    # head. Forge's speculative build requires actual MTP weight evidence.
     mtp = getattr(inspection, "mtp", None)
     tensor_count = int(getattr(mtp, "tensor_count", 0) or 0) if mtp is not None else 0
     if tensor_count > 0 or _inspection_has_mtp_weight_evidence(inspection):
@@ -461,10 +461,10 @@ def _no_mtp_probe_message(diagnostic: str | None, *, config_only: bool = False) 
         )
     return (
         "Source has no MTP head, and Forge currently builds speculative "
-        "MTP artifacts only. This does NOT block running the model: MTPLX "
-        "serves MTP-less checkpoints autoregressive directly (mtplx run / "
-        "mtplx serve — MTP unavailable, mtp_off). AR-only Forge "
-        "conversion/quantization lands in a later update."
+        "MTP artifacts only; it cannot create missing trained MTP weights. "
+        "AR-only Forge conversion/quantization is not supported yet. "
+        "For runtime-compatible checkpoints, use mtplx run / mtplx serve "
+        "directly with MTP disabled (mtp_off)."
     )
 
 
