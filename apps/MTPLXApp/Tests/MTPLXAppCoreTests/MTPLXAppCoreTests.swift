@@ -6635,7 +6635,6 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(currentFanMode, "default")
     }
 
-    @MainActor
     func testCancelDuringStartupLeavesAppStoppedAndRestoresFans() async throws {
         let root = temporaryDirectory()
         let modelDir = root.appendingPathComponent("complete-model", isDirectory: true)
@@ -6655,7 +6654,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             """
         )
         let probe = FanFallbackProbe()
-        let backend = MTPLXBackendStore(
+        let backend = await MTPLXBackendStore(
             configuration: MTPLXAppConfiguration(
                 executablePath: fake.path,
                 model: modelDir.path,
@@ -6684,20 +6683,25 @@ final class MTPLXAppCoreTests: XCTestCase {
         }
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline {
-            if backend.daemonState == .starting {
+            if await backend.daemonState == .starting {
                 break
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        XCTAssertEqual(backend.daemonState, .starting, "Startup failed: \(String(describing: backend.runtimeUpdateFailure))")
+        let startingState = await backend.daemonState
+        let runtimeFailure = await backend.runtimeUpdateFailure
+        XCTAssertEqual(startingState, .starting, "Startup failed: \(String(describing: runtimeFailure))")
 
         await backend.stopDaemon()
         await startTask.value
         await backend.awaitDaemonTeardown()
 
-        XCTAssertEqual(backend.daemonState, .stopped)
-        XCTAssertEqual(backend.startupPhase, .idle)
-        XCTAssertEqual(backend.currentFanMode, "default")
+        let stoppedState = await backend.daemonState
+        let startupPhase = await backend.startupPhase
+        let fanMode = await backend.currentFanMode
+        XCTAssertEqual(stoppedState, .stopped)
+        XCTAssertEqual(startupPhase, .idle)
+        XCTAssertEqual(fanMode, "default")
         let fallbackCalls = await probe.count()
         XCTAssertGreaterThanOrEqual(fallbackCalls, 1)
     }
@@ -8873,7 +8877,6 @@ final class MTPLXAppCoreTests: XCTestCase {
         task.cancel()
     }
 
-    @MainActor
     func testBackendHeadlineDecodeUsesRawCompletionTPSBeforeDisplayTPS() async throws {
         let port = try freeTCPPort()
         let script = try makeExecutable(
@@ -8922,17 +8925,17 @@ final class MTPLXAppCoreTests: XCTestCase {
         defer { process.terminate() }
         try await waitForHTTPFixture(process, port: port)
 
-        let backend = MTPLXBackendStore(
+        let backend = await MTPLXBackendStore(
             configuration: MTPLXAppConfiguration(port: port),
             settingsStore: MTPLXSettingsStore(settingsURL: temporaryDirectory().appendingPathComponent("settings.json"))
         )
 
-        backend.startMetricsStream()
+        await backend.startMetricsStream()
 
         let deadline = Date().addingTimeInterval(5)
         var heldDecode: Double?
         while Date() < deadline {
-            if case .held(let value, _) = backend.headlineDecode {
+            if case .held(let value, _) = await backend.headlineDecode {
                 heldDecode = value
                 break
             }
@@ -8942,7 +8945,6 @@ final class MTPLXAppCoreTests: XCTestCase {
         XCTAssertEqual(heldDecode ?? -1, 30.0, accuracy: 0.01)
     }
 
-    @MainActor
     func testBackendHeadlineDecodeIgnoresCumulativeAndStaleSnapshotMaxDuringLiveRequest() async throws {
         let port = try freeTCPPort()
         let script = try makeExecutable(
@@ -9049,22 +9051,22 @@ final class MTPLXAppCoreTests: XCTestCase {
         defer { process.terminate() }
         try await waitForHTTPFixture(process, port: port)
 
-        let backend = MTPLXBackendStore(
+        let backend = await MTPLXBackendStore(
             configuration: MTPLXAppConfiguration(port: port),
             settingsStore: MTPLXSettingsStore(settingsURL: temporaryDirectory().appendingPathComponent("settings.json"))
         )
 
-        backend.startMetricsStream()
+        await backend.startMetricsStream()
 
         let deadline = Date().addingTimeInterval(5)
         var liveDecode: Double?
         while Date() < deadline {
-            if case .live(let value) = backend.headlineDecode {
+            if case .live(let value) = await backend.headlineDecode {
                 liveDecode = value
             }
-            if liveDecode != nil, backend.latest?.values["request_id"]?.stringValue == "current-request" {
+            if liveDecode != nil, await backend.latest?.values["request_id"]?.stringValue == "current-request" {
                 try await Task.sleep(for: .milliseconds(300))
-                if case .live(let value) = backend.headlineDecode {
+                if case .live(let value) = await backend.headlineDecode {
                     liveDecode = value
                 }
                 break
@@ -9073,7 +9075,8 @@ final class MTPLXAppCoreTests: XCTestCase {
         }
 
         XCTAssertEqual(liveDecode ?? -1, 21.0, accuracy: 0.01)
-        XCTAssertEqual(backend.latest?.values["request_id"]?.stringValue, "current-request")
+        let latestRequestID = await backend.latest?.values["request_id"]?.stringValue
+        XCTAssertEqual(latestRequestID, "current-request")
     }
 
     func testPrefillStateDecodesChunkTiming() throws {
@@ -11341,7 +11344,6 @@ final class MTPLXAppCoreTests: XCTestCase {
 
     /// Process.run only proves that the child was spawned. Wait for the HTTP
     /// listener before exercising SSE so connection backoff is not test setup.
-    @MainActor
     private func waitForHTTPFixture(_ process: Process, port: Int) async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 0.5
