@@ -387,7 +387,7 @@ def test_tester_runs_shared_tests_and_requires_successful_evidence(tmp_path):
         orchestrator.close()
 
 
-def test_restart_pauses_delegation_and_retry_requeues_child(tmp_path):
+def test_restart_pauses_delegation_and_retry_requeues_child(tmp_path, monkeypatch):
     project = tmp_path / "project"
     project.mkdir()
     (project / "README.md").write_text("# MTPLX\n", encoding="utf-8")
@@ -411,6 +411,14 @@ def test_restart_pauses_delegation_and_retry_requeues_child(tmp_path):
     orchestrator.close()
 
     restarted = AgentOrchestrator(store)
+    scheduled = []
+    # Observe submission without racing the worker's queued -> running update.
+    # Execution itself is covered by the tool-loop tests below.
+    monkeypatch.setattr(
+        restarted._executor,
+        "submit",
+        lambda function, *args: scheduled.append((function, args)),
+    )
     try:
         paused = restarted.get(delegation.id)
         assert paused.status == "paused"
@@ -423,6 +431,7 @@ def test_restart_pauses_delegation_and_retry_requeues_child(tmp_path):
         queued = restarted.retry(paused.id)
         assert queued.status == "queued"
         assert store.get_run(paused.child_run_id).status == "queued"
+        assert scheduled == [(restarted._run, (paused.id,))]
     finally:
         if delegation.worktree_path:
             _git(project, "worktree", "remove", "--force", delegation.worktree_path)
