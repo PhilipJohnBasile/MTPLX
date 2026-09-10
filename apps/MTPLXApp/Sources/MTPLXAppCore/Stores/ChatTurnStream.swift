@@ -64,6 +64,7 @@ final class ChatTurnStream {
     var contentBuffer = ""
 
     // Request plumbing.
+    var workspaceRunID: String?
     var requestId: String?
     var task: Task<Void, Never>?
 

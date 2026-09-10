@@ -187,6 +187,40 @@ final class ChatInFlightPersistenceTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testWorkspaceRunCompletionAndCancellationStayWithOwningConversation() async throws {
+        let daemon = try await Self.startHoldableChatDaemon()
+        defer { daemon.process.terminate() }
+        let container = try ChatStore.makeInMemoryContainer()
+        let api = MTPLXAPIClient(baseURL: daemon.baseURL)
+        let client = MTPLXChatClient(apiClient: api)
+        let viewModel = ChatViewModel(container: container, chatClientProvider: { client })
+        let conversationA = viewModel.createNewConversation()
+        conversationA.workspaceID = "workspace-a"
+        viewModel.send("prompt-a")
+        try await poll("workspace A is streaming") {
+            viewModel.streamingContent.contains("Alpha part one.")
+        }
+        let runA = try XCTUnwrap(conversationA.activeRunID)
+        let conversationB = viewModel.createNewConversation()
+        conversationB.workspaceID = "workspace-b"
+        viewModel.send("prompt-b")
+        viewModel.select(conversationA)
+        try await poll("workspace B finishes in the background") {
+            try Self.assistantMessages(in: container, conversationID: conversationB.id)
+                .contains { $0.visibleContent == "Beta reply." }
+        }
+        let runB = try XCTUnwrap(conversationB.activeRunID)
+        XCTAssertNotEqual(runA, runB)
+        await viewModel.cancel()
+        let statusA = try await api.run(runID: runA)
+        let statusB = try await api.run(runID: runB)
+        XCTAssertEqual(statusA.status, "cancelled")
+        XCTAssertEqual(statusB.status, "completed")
+        XCTAssertNotNil(conversationA.sessionIDOverride)
+        XCTAssertNil(conversationB.sessionIDOverride)
+    }
+
     // MARK: - Fake daemon
 
     /// A running fake chat daemon whose "prompt-a" stream holds after
@@ -223,6 +257,7 @@ final class ChatInFlightPersistenceTests: XCTestCase {
         PORT = \(port)
         RELEASE = r'''\(releaseURL.path)'''
         CANCEL_MARKER = r'''\(cancelMarkerURL.path)'''
+        RUNS = {}
 
         def sse(payload):
             return ("data: " + json.dumps(payload) + "\\n\\n").encode("utf-8")
@@ -232,13 +267,43 @@ final class ChatInFlightPersistenceTests: XCTestCase {
                 return
 
             def do_GET(self):
+                if self.path.startswith("/v1/mtplx/runs/"):
+                    self.respond(RUNS[self.path.rsplit("/", 1)[-1]])
+                    return
                 self.send_response(200)
                 self.end_headers()
                 self.wfile.write(b"ok")
 
+            def respond(self, payload):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(payload).encode())
+
+            def do_PATCH(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                run = RUNS[self.path.rsplit("/", 1)[-1]]
+                run.update(body)
+                self.respond(run)
+
             def do_POST(self):
                 length = int(self.headers.get("Content-Length", "0") or "0")
                 body = self.rfile.read(length) if length else b""
+                if self.path.startswith("/v1/mtplx/workspaces/") and self.path.endswith("/runs"):
+                    request = json.loads(body)
+                    workspace = self.path.split("/")[-2]
+                    run = {
+                        "id": "run-" + workspace, "workspace_id": workspace,
+                        "session_id": request["session_id"], "title": request["title"],
+                        "status": "queued", "created_at": 0, "updated_at": 0,
+                        "event_count": 0,
+                    }
+                    RUNS[run["id"]] = run
+                    self.respond(run)
+                    return
+                if self.path.startswith("/v1/mtplx/runs/") and self.path.endswith("/events"):
+                    self.respond({})
+                    return
                 if self.path.startswith("/v1/mtplx/cancel/"):
                     with open(CANCEL_MARKER, "wb") as f:
                         f.write(b"cancelled")
