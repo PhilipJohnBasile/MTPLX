@@ -6505,7 +6505,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             HEALTH = json.loads(r'''\(Self.healthJSON)''')
@@ -7024,7 +7024,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
 
@@ -7151,7 +7151,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             REQUEST = r'''\(requestURL.path)'''
@@ -7247,7 +7247,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
 
@@ -7404,7 +7404,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
 
@@ -7528,7 +7528,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             FIRST = r'''\(firstRequestURL.path)'''
@@ -7667,7 +7667,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             FIRST = r'''\(firstRequestURL.path)'''
@@ -7836,7 +7836,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
 
@@ -8128,7 +8128,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             CAPTURE = r'''\(captureURL.path)'''
@@ -8482,7 +8482,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
 
@@ -8816,7 +8816,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             SNAPSHOT = json.loads(r'''\(Self.snapshotJSON)''')
@@ -8879,6 +8879,10 @@ final class MTPLXAppCoreTests: XCTestCase {
 
     func testBackendHeadlineDecodeUsesRawCompletionTPSBeforeDisplayTPS() async throws {
         let port = try freeTCPPort()
+        let fixtureRoot = temporaryDirectory()
+        try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+        let readyFile = fixtureRoot.appendingPathComponent("ready")
+        let requestLog = fixtureRoot.appendingPathComponent("requests.log")
         let script = try makeExecutable(
             named: "fake-raw-tps-metrics",
             body: """
@@ -8886,7 +8890,8 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
+            from pathlib import Path
 
             PORT = \(port)
 
@@ -8895,6 +8900,8 @@ final class MTPLXAppCoreTests: XCTestCase {
                     return
 
                 def do_GET(self):
+                    with Path(r"\(requestLog.path)").open("a") as log:
+                        log.write(self.path + "\\n")
                     if self.path.startswith("/v1/mtplx/metrics/stream"):
                         self.send_response(200)
                         self.send_header("Content-Type", "text/event-stream")
@@ -8915,7 +8922,9 @@ final class MTPLXAppCoreTests: XCTestCase {
                         self.send_response(404)
                         self.end_headers()
 
-            ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+            server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+            Path(r"\(readyFile.path)").write_text("ready")
+            server.serve_forever()
             PY
             """
         )
@@ -8923,7 +8932,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         process.executableURL = script
         try process.run()
         defer { process.terminate() }
-        try await waitForHTTPFixture(process, port: port)
+        try await waitForHTTPFixture(process, readyFile: readyFile)
 
         let backend = await MTPLXBackendStore(
             configuration: MTPLXAppConfiguration(port: port),
@@ -8942,11 +8951,18 @@ final class MTPLXAppCoreTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        XCTAssertEqual(heldDecode ?? -1, 30.0, accuracy: 0.01)
+        let connectionState = await backend.connectionState
+        let receivedRequests = (try? String(contentsOf: requestLog, encoding: .utf8)) ?? "none"
+        let diagnostic = "Metrics state: \(connectionState); fixture requests: \(receivedRequests)"
+        XCTAssertEqual(heldDecode ?? -1, 30.0, accuracy: 0.01, diagnostic)
     }
 
     func testBackendHeadlineDecodeIgnoresCumulativeAndStaleSnapshotMaxDuringLiveRequest() async throws {
         let port = try freeTCPPort()
+        let fixtureRoot = temporaryDirectory()
+        try FileManager.default.createDirectory(at: fixtureRoot, withIntermediateDirectories: true)
+        let readyFile = fixtureRoot.appendingPathComponent("ready")
+        let requestLog = fixtureRoot.appendingPathComponent("requests.log")
         let script = try makeExecutable(
             named: "fake-live-tps-bounce-metrics",
             body: """
@@ -8955,7 +8971,8 @@ final class MTPLXAppCoreTests: XCTestCase {
             import copy
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
+            from pathlib import Path
 
             PORT = \(port)
             BASE = json.loads(r'''\(Self.snapshotJSON)''')
@@ -9017,6 +9034,8 @@ final class MTPLXAppCoreTests: XCTestCase {
                     return
 
                 def do_GET(self):
+                    with Path(r"\(requestLog.path)").open("a") as log:
+                        log.write(self.path + "\\n")
                     if self.path.startswith("/v1/mtplx/metrics/stream"):
                         self.send_response(200)
                         self.send_header("Content-Type", "text/event-stream")
@@ -9041,7 +9060,9 @@ final class MTPLXAppCoreTests: XCTestCase {
                         self.send_response(404)
                         self.end_headers()
 
-            ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+            server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+            Path(r"\(readyFile.path)").write_text("ready")
+            server.serve_forever()
             PY
             """
         )
@@ -9049,7 +9070,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         process.executableURL = script
         try process.run()
         defer { process.terminate() }
-        try await waitForHTTPFixture(process, port: port)
+        try await waitForHTTPFixture(process, readyFile: readyFile)
 
         let backend = await MTPLXBackendStore(
             configuration: MTPLXAppConfiguration(port: port),
@@ -9074,7 +9095,10 @@ final class MTPLXAppCoreTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(50))
         }
 
-        XCTAssertEqual(liveDecode ?? -1, 21.0, accuracy: 0.01)
+        let connectionState = await backend.connectionState
+        let receivedRequests = (try? String(contentsOf: requestLog, encoding: .utf8)) ?? "none"
+        let diagnostic = "Metrics state: \(connectionState); fixture requests: \(receivedRequests)"
+        XCTAssertEqual(liveDecode ?? -1, 21.0, accuracy: 0.01, diagnostic)
         let latestRequestID = await backend.latest?.values["request_id"]?.stringValue
         XCTAssertEqual(latestRequestID, "current-request")
     }
@@ -10004,7 +10028,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             HEALTH = json.loads(r'''\(Self.healthJSON)''')
@@ -11342,20 +11366,13 @@ final class MTPLXAppCoreTests: XCTestCase {
         ])
     }
 
-    /// Process.run only proves that the child was spawned. Wait for the HTTP
-    /// listener before exercising SSE so connection backoff is not test setup.
-    private func waitForHTTPFixture(_ process: Process, port: Int) async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 0.5
-        configuration.timeoutIntervalForResource = 0.5
-        configuration.waitsForConnectivity = false
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-        let url = URL(string: "http://127.0.0.1:\(port)/")!
+    /// Process.run only proves that the child was spawned. The fixture publishes
+    /// readiness after bind/listen, avoiding failed HTTP probes and their retry
+    /// state before the metrics client makes its first connection.
+    private func waitForHTTPFixture(_ process: Process, readyFile: URL) async throws {
         let deadline = Date().addingTimeInterval(5)
         while process.isRunning, Date() < deadline {
-            if let (_, response) = try? await session.data(from: url),
-               response is HTTPURLResponse {
+            if FileManager.default.fileExists(atPath: readyFile.path) {
                 return
             }
             try await Task.sleep(for: .milliseconds(50))
@@ -11433,6 +11450,20 @@ final class MTPLXAppCoreTests: XCTestCase {
         }
     }
 
+    /// All fixture listeners bind loopback. HTTPServer's default server_bind
+    /// reverse-resolves its address, which can stall startup on an offline or
+    /// slow resolver even though no test needs that hostname.
+    private static let loopbackHTTPServerSource = """
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer as PythonThreadingHTTPServer
+    from socketserver import TCPServer
+
+    class ThreadingHTTPServer(PythonThreadingHTTPServer):
+        def server_bind(self):
+            TCPServer.server_bind(self)
+            self.server_name = "localhost"
+            self.server_port = self.server_address[1]
+    """
+
     private func makeHTTPFixtureScript(
         port: Int,
         healthJSON: String,
@@ -11445,7 +11476,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             PORT = \(port)
             HEALTH = json.loads(r'''\(healthJSON)''')
@@ -11627,7 +11658,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             body: """
             #!/bin/sh
             exec python3 -u - <<'PY'
-            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            \(Self.loopbackHTTPServerSource)
 
             class Handler(BaseHTTPRequestHandler):
                 def log_message(self, *_args):
