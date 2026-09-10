@@ -53,7 +53,7 @@ struct ChatFakeDaemon {
         import os
         import socket
         import time
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        \(LoopbackHTTPFixture.serverSource)
 
         PORT = \(port)
         CANCEL_MARKER = r'''\(cancelMarkerURL.path)'''

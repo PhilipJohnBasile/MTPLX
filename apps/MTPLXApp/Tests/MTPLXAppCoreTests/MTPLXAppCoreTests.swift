@@ -6505,7 +6505,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             HEALTH = json.loads(r'''\(Self.healthJSON)''')
@@ -7024,7 +7024,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
 
@@ -7151,7 +7151,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             REQUEST = r'''\(requestURL.path)'''
@@ -7247,7 +7247,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
 
@@ -7404,7 +7404,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
 
@@ -7528,7 +7528,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             FIRST = r'''\(firstRequestURL.path)'''
@@ -7667,7 +7667,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             FIRST = r'''\(firstRequestURL.path)'''
@@ -7836,7 +7836,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
 
@@ -8128,7 +8128,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             #!/bin/sh
             exec python3 -u - <<'PY'
             import json
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             CAPTURE = r'''\(captureURL.path)'''
@@ -8482,7 +8482,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
 
@@ -8816,7 +8816,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             SNAPSHOT = json.loads(r'''\(Self.snapshotJSON)''')
@@ -8890,7 +8890,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
             from pathlib import Path
 
             PORT = \(port)
@@ -8971,7 +8971,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             import copy
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
             from pathlib import Path
 
             PORT = \(port)
@@ -10028,7 +10028,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             HEALTH = json.loads(r'''\(Self.healthJSON)''')
@@ -11450,20 +11450,6 @@ final class MTPLXAppCoreTests: XCTestCase {
         }
     }
 
-    /// All fixture listeners bind loopback. HTTPServer's default server_bind
-    /// reverse-resolves its address, which can stall startup on an offline or
-    /// slow resolver even though no test needs that hostname.
-    private static let loopbackHTTPServerSource = """
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer as PythonThreadingHTTPServer
-    from socketserver import TCPServer
-
-    class ThreadingHTTPServer(PythonThreadingHTTPServer):
-        def server_bind(self):
-            TCPServer.server_bind(self)
-            self.server_name = "localhost"
-            self.server_port = self.server_address[1]
-    """
-
     private func makeHTTPFixtureScript(
         port: Int,
         healthJSON: String,
@@ -11476,7 +11462,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             exec python3 -u - <<'PY'
             import json
             import time
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             PORT = \(port)
             HEALTH = json.loads(r'''\(healthJSON)''')
@@ -11658,7 +11644,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             body: """
             #!/bin/sh
             exec python3 -u - <<'PY'
-            \(Self.loopbackHTTPServerSource)
+            \(LoopbackHTTPFixture.serverSource)
 
             class Handler(BaseHTTPRequestHandler):
                 def log_message(self, *_args):
