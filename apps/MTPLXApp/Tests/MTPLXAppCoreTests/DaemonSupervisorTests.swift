@@ -615,6 +615,13 @@ final class DaemonSupervisorTests: XCTestCase {
             processID: Int(pi.processIdentifier),
             cancellationMarkerURL: handoffDirectory.appendingPathComponent("cancelled")
         )
+        // Process.run returns before the child necessarily finishes exec.
+        // Wait for the actual environment identity before asserting it.
+        let identityDeadline = Date().addingTimeInterval(5)
+        while Date() < identityDeadline,
+              !MTPLXTerminalHandoffLease.process(pid: pi.processIdentifier, hasExactHandoffID: handoffID) {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         XCTAssertTrue(MTPLXTerminalHandoffLease.process(
             pid: pi.processIdentifier,
             hasExactHandoffID: handoffID

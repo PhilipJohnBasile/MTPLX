@@ -41,7 +41,12 @@ let package = Package(
         .testTarget(
             name: "MTPLXAppHostTests",
             dependencies: ["MTPLXAppHost"],
-            path: "Tests/MTPLXAppHostTests"
+            path: "Tests/MTPLXAppHostTests",
+            linkerSettings: [
+                // SwiftPM places Sparkle beside the test bundle. Resolve
+                // that sibling framework when loading host tests directly.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../../.."])
+            ]
         ),
     ]
 )
