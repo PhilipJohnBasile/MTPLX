@@ -3,7 +3,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, "codex/agent-workspace-*"]
 
 permissions:
   contents: read
@@ -20,3 +20,25 @@ jobs:
       - run: python -m pip install -e ".[dev,server]"
       - run: python -m pytest tests/test_no_mlx_imports.py tests/test_public_cli.py tests/test_runtime_kpis.py tests/test_server_openai.py tests/test_openai_bridge.py tests/test_thermal.py tests/test_cache_state.py
       - run: python -m compileall -q mtplx tests
+
+  agent-workspace:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,server]"
+      - name: Agent, memory, graph, and workspace regressions
+        run: >-
+          python -m pytest
+          tests/test_agent_cli.py tests/test_agent_orchestrator.py
+          tests/test_agent_profiles.py tests/test_graph_executor.py
+          tests/test_graphs.py tests/test_memory.py tests/test_skills.py
+          tests/test_workspace_tools.py
+
+  swift-tests:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: swift test --package-path apps/MTPLXApp
