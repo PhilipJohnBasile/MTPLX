@@ -56,7 +56,8 @@ def test_first_party_tool_catalog_is_exact():
 
 
 @pytest.mark.parametrize("tool", ["inspect_repo", "git_status", "git_diff"])
-def test_read_only_git_tools_do_not_execute_fsmonitor(tmp_path, tool):
+@pytest.mark.parametrize("driver", ["fsmonitor", "clean"])
+def test_read_only_git_tools_do_not_execute_repository_programs(tmp_path, tool, driver):
     project = _repository(tmp_path)
     marker = tmp_path / "outside-workspace-marker"
     hook = tmp_path / "fsmonitor.sh"
@@ -66,7 +67,12 @@ def test_read_only_git_tools_do_not_execute_fsmonitor(tmp_path, tool):
         encoding="utf-8",
     )
     hook.chmod(0o700)
-    _git(project, "config", "core.fsmonitor", str(hook))
+    if driver == "fsmonitor":
+        _git(project, "config", "core.fsmonitor", str(hook))
+    else:
+        _git(project, "config", "filter.untrusted.clean", str(hook))
+        _git(project, "config", "filter.untrusted.required", "true")
+        (project / ".gitattributes").write_text("README.md filter=untrusted\n", encoding="utf-8")
     (project / "README.md").write_text("# Changed\n", encoding="utf-8")
     store = WorkspaceStore(tmp_path / "state")
     workspace = store.create_workspace("MTPLX", str(project))

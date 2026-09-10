@@ -411,16 +411,16 @@ class AgentOrchestrator:
         if not worktree.is_dir():
             raise AgentDelegationError(f"isolated worktree is missing: {worktree}")
         status = self._command(
-            ["git", "-C", str(worktree), "status", "--short", "--branch"],
+            ["git", "-C", str(worktree), "status", "--short", "--branch", "--ignore-submodules=all"],
             cwd=worktree,
         )
         diff = self._worktree_patch(worktree)
         check = self._command(
-            ["git", "-C", str(worktree), "diff", "--check", "HEAD"],
+            ["git", "-C", str(worktree), "diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--check", "HEAD"],
             cwd=worktree,
         )
         parent_status = self._command(
-            ["git", "-C", str(root), "status", "--short", "--branch"],
+            ["git", "-C", str(root), "status", "--short", "--branch", "--ignore-submodules=all"],
             cwd=root,
         )
         parent_apply = self._check_patch_against_parent(root, str(diff.get("stdout") or ""))
@@ -600,7 +600,7 @@ class AgentOrchestrator:
         if not (root / ".git").exists():
             raise AgentDelegationError("delegated agents require a Git workspace")
         commit_result = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+            WorkspaceToolService._git_command("-C", str(root), "rev-parse", "--verify", "HEAD", root=root),
             capture_output=True,
             text=True,
             timeout=20,
@@ -614,7 +614,10 @@ class AgentOrchestrator:
             raise AgentDelegationError(f"worktree already exists: {target}")
         target.parent.mkdir(parents=True, exist_ok=True)
         result = subprocess.run(
-            ["git", "-C", str(root), "worktree", "add", "--detach", str(target), commit],
+            WorkspaceToolService._git_command(
+                "-C", str(root), "worktree", "add", "--detach", str(target), commit,
+                root=root,
+            ),
             capture_output=True,
             text=True,
             timeout=60,
@@ -631,7 +634,7 @@ class AgentOrchestrator:
         if worktree_path is None:
             return
         subprocess.run(
-            ["git", "-C", workspace.root_path, "worktree", "remove", "--force", str(worktree_path)],
+            WorkspaceToolService._git_command("-C", workspace.root_path, "worktree", "remove", "--force", str(worktree_path), root=Path(workspace.root_path)),
             capture_output=True,
             text=True,
             timeout=60,
@@ -730,11 +733,11 @@ class AgentOrchestrator:
         root = Path(delegation.worktree_path or workspace.root_path).expanduser().resolve()
         parent_root = Path(workspace.root_path).expanduser().resolve()
         parent_status = self._command(
-            ["git", "-C", str(parent_root), "status", "--short", "--branch"],
+            ["git", "-C", str(parent_root), "status", "--short", "--branch", "--ignore-submodules=all"],
             cwd=parent_root,
         )
         parent_diff = self._command(
-            ["git", "-C", str(parent_root), "diff", "HEAD", "--no-ext-diff", "--unified=3"],
+            ["git", "-C", str(parent_root), "diff", "HEAD", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all", "--unified=3"],
             cwd=parent_root,
         )
         profile = self.profile_store.get(delegation.role)
@@ -900,7 +903,7 @@ class AgentOrchestrator:
                 "delegated agent exhausted its round or token budget without a final response"
             )
         final_status = self._command(
-            ["git", "-C", str(root), "status", "--short", "--branch"],
+            ["git", "-C", str(root), "status", "--short", "--branch", "--ignore-submodules=all"],
             cwd=root,
         )
         final_diff = self._worktree_patch(root)
@@ -1038,6 +1041,8 @@ class AgentOrchestrator:
 
     @staticmethod
     def _command(args: list[str], *, cwd: Path) -> dict[str, Any]:
+        if args and args[0] == "git":
+            args = WorkspaceToolService._git_command(*args[1:], root=cwd)
         result = subprocess.run(
             args,
             cwd=cwd,
@@ -1062,6 +1067,9 @@ class AgentOrchestrator:
                 "-C",
                 str(root),
                 "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=all",
                 "--binary",
                 "--full-index",
                 "HEAD",
@@ -1095,6 +1103,9 @@ class AgentOrchestrator:
                     "-C",
                     str(root),
                     "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--ignore-submodules=all",
                     "--no-index",
                     "--binary",
                     "--full-index",
@@ -1137,7 +1148,7 @@ class AgentOrchestrator:
                 "stderr": "",
             }
         result = subprocess.run(
-            ["git", "-C", str(root), "apply", "--check", "--whitespace=error-all", "-"],
+            WorkspaceToolService._git_command("-C", str(root), "apply", "--check", "--whitespace=error-all", "-", root=root),
             cwd=root,
             input=patch,
             capture_output=True,

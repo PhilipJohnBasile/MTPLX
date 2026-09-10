@@ -183,7 +183,9 @@ final class MTPLXWorkspaceToolServiceTests: XCTestCase {
         _ = try run(["git", "config", "core.fsmonitor", hook.path], in: root)
         _ = try run(["git", "config", "diff.untrusted.textconv", hook.path], in: root)
         _ = try run(["git", "config", "diff.untrusted.command", hook.path], in: root)
-        try Data("README.md diff=untrusted\n".utf8).write(to: root.appendingPathComponent(".gitattributes"))
+        _ = try run(["git", "config", "filter.untrusted.clean", hook.path], in: root)
+        _ = try run(["git", "config", "filter.untrusted.required", "true"], in: root)
+        try Data("README.md diff=untrusted filter=untrusted\n".utf8).write(to: root.appendingPathComponent(".gitattributes"))
         try Data("changed\n".utf8).write(to: readme)
         let service = MTPLXWorkspaceToolService()
         for name in ["inspect_repo", "git_status", "git_diff"] {

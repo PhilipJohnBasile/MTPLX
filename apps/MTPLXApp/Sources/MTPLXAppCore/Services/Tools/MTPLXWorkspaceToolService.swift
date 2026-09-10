@@ -524,12 +524,39 @@ struct MTPLXWorkspaceToolService: Sendable {
         let timedOut: Bool
     }
 
-    private static func executeCommand(_ command: String, root: URL, timeout: TimeInterval) -> CommandResult {
+    private static func executeCommand(
+        _ command: String, root: URL, timeout: TimeInterval, protectGitFilters: Bool = true
+    ) -> CommandResult {
+        var guardedCommand = command
+        if protectGitFilters, command.hasPrefix(readOnlyGit + " ") {
+            let filters = executeCommand(
+                readOnlyGit + " config --null --name-only --get-regexp '^filter\\..*\\.(clean|smudge|process|required)$'",
+                root: root, timeout: min(timeout, 10), protectGitFilters: false
+            )
+            // Exit 1 means no matching keys. Refuse incomplete or undecodable
+            // output rather than silently leaving an uninspected driver active.
+            guard !filters.timedOut,
+                  filters.exitCode == 1 || (
+                    filters.exitCode == 0 && !filters.stdout.isEmpty &&
+                    filters.stdout.utf8.count < 40_000 && filters.stdout.hasSuffix("\0")
+                  )
+            else {
+                return CommandResult(
+                    exitCode: -1, stdout: "", stderr: "Could not inspect Git content filters.",
+                    timedOut: filters.timedOut
+                )
+            }
+            let options = filters.stdout.split(separator: "\0").map { key in
+                let value = key.hasSuffix(".required") ? "false" : ""
+                return " -c " + shellQuote("\(key)=\(value)")
+            }.joined()
+            guardedCommand = readOnlyGit + options + command.dropFirst(readOnlyGit.count)
+        }
         let process = Process()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-f", "-c", command]
+        process.arguments = ["-f", "-c", guardedCommand]
         process.currentDirectoryURL = root
         process.environment = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",

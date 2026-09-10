@@ -1,8 +1,12 @@
 import json
+import shlex
 import subprocess
 import time
+from pathlib import Path
 
-from mtplx.agent_orchestrator import AgentOrchestrator
+import pytest
+
+from mtplx.agent_orchestrator import AgentCompletionEvidenceError, AgentOrchestrator
 from mtplx.agent_workspace import WorkspaceStore
 from mtplx.workspace_tools import WorkspaceToolService
 
@@ -607,4 +611,54 @@ def test_implementer_approval_tool_loop_review_and_guarded_integration(tmp_path)
         for item in orchestrator.list(workspace_id=workspace.id):
             if item.worktree_path:
                 _git(project, "worktree", "remove", "--force", item.worktree_path)
+        orchestrator.close()
+
+
+@pytest.mark.parametrize("driver", ["fsmonitor", "textconv", "external_diff", "checkout_hook", "smudge_filter", "clean_filter", "process_filter"])
+def test_reviewer_git_does_not_execute_repository_programs(tmp_path, driver):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "README.md").write_text("original\n", encoding="utf-8")
+    (project / ".gitattributes").write_text("README.md diff=fixture filter=fixture\n", encoding="utf-8")
+    _git(project, "init", "-q")
+    _git(project, "add", ".")
+    _git(project, "-c", "user.name=MTPLX Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "initial")
+    marker = tmp_path / "unexpected-execution"
+    executable = tmp_path / "post-checkout"
+    executable.write_text("#!/bin/sh\nprintf invoked > " + shlex.quote(str(marker)) + "\n", encoding="utf-8")
+    executable.chmod(0o755)
+    settings = {
+        "fsmonitor": ("core.fsmonitor", str(executable)),
+        "textconv": ("diff.fixture.textconv", str(executable)),
+        "external_diff": ("diff.external", str(executable)),
+        "checkout_hook": ("core.hooksPath", str(tmp_path)),
+        "smudge_filter": ("filter.fixture.smudge", str(executable)),
+        "clean_filter": ("filter.fixture.clean", str(executable)),
+        "process_filter": ("filter.fixture.process", str(executable)),
+    }
+    _git(project, "config", *settings[driver])
+    if driver == "smudge_filter":
+        _git(project, "config", "filter.fixture.required", "true")
+    store = WorkspaceStore(tmp_path / "state")
+    workspace = store.create_workspace("Fixture", str(project), model="test-model")
+    orchestrator = AgentOrchestrator(store)
+    delegation = None
+    try:
+        delegation = orchestrator.delegate(workspace.id, role="reviewer", start=False)
+        worktree = Path(delegation.worktree_path)
+        assert (worktree / "README.md").read_text() == "original\n"
+        (project / "README.md").write_text("parent change\n", encoding="utf-8")
+        (worktree / "README.md").write_text("child change\n", encoding="utf-8")
+        report = orchestrator.worktree_check(delegation.id)
+        assert report["diff"]["exit_code"] == 0, report["diff"]["stderr"]
+        assert "child change" in report["diff"]["stdout"]
+        orchestrator._chat_completion = lambda **kwargs: {
+            "choices": [{"message": {"content": "Reviewed the provided Git diff."}}]
+        }
+        with pytest.raises(AgentCompletionEvidenceError, match="no successful first-party tool"):
+            orchestrator._run_model_task(delegation, workspace)
+        assert not marker.exists(), f"reviewer executed repository {driver}"
+    finally:
+        if delegation is not None:
+            orchestrator._remove_worktree(workspace, Path(delegation.worktree_path))
         orchestrator.close()

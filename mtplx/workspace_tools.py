@@ -1062,7 +1062,7 @@ class WorkspaceToolService:
             ".gitignore",
         )
         branch = self._run_process(
-            self._git_command("branch", "--show-current"), root, timeout=10, sandbox=False
+            self._git_command("branch", "--show-current", root=root), root, timeout=10, sandbox=False
         )
         top_level = sorted(
             item.name
@@ -1080,23 +1080,40 @@ class WorkspaceToolService:
 
     def _git_status(self, _arguments: Mapping[str, Any], root: Path) -> dict[str, Any]:
         return self._run_process(
-            self._git_command("status", "--short", "--branch", "--ignore-submodules=all"),
+            self._git_command("status", "--short", "--branch", "--ignore-submodules=all", root=root),
             root,
             timeout=10,
             sandbox=False,
         )
 
     @staticmethod
-    def _git_command(*arguments: str) -> list[str]:
-        # Read permission must not authorize commands supplied by repository
-        # configuration. In particular, status/diff can run core.fsmonitor.
-        return [
+    def _git_command(*arguments: str, root: Path) -> list[str]:
+        # Read permission must not authorize repository-configured programs.
+        # Even status/diff can invoke a clean/process filter when refreshing
+        # the index. Inspect only configuration keys, then disable those
+        # drivers for this invocation without changing repository settings.
+        command = [
             "git", "--no-optional-locks",
             "-c", "core.fsmonitor=false",
             "-c", f"core.hooksPath={os.devnull}",
             "-c", "protocol.allow=never",
-            *arguments,
         ]
+        configured = subprocess.run(
+            [*command, "config", "--null", "--name-only", "--get-regexp",
+             r"^filter\..*\.(clean|smudge|process|required)$"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if configured.returncode not in {0, 1}:
+            raise WorkspaceToolError("could not inspect Git content filters")
+        for key in configured.stdout.split("\0"):
+            if key:
+                value = "false" if key.endswith(".required") else ""
+                command.extend(["-c", f"{key}={value}"])
+        return [*command, *arguments]
 
     def _git_diff(self, arguments: Mapping[str, Any], root: Path) -> dict[str, Any]:
         scope = str(arguments["scope"])
@@ -1113,7 +1130,7 @@ class WorkspaceToolService:
                 diff_arguments.append("--cached")
             if raw_path:
                 diff_arguments.extend(["--", raw_path])
-            result = self._run_process(self._git_command(*diff_arguments), root, timeout=20, sandbox=False)
+            result = self._run_process(self._git_command(*diff_arguments, root=root), root, timeout=20, sandbox=False)
             sections.append({"scope": item, **result})
         return {
             "path": raw_path,
@@ -1152,7 +1169,7 @@ class WorkspaceToolService:
                 handle.flush()
                 os.fsync(handle.fileno())
             check = self._run_process(
-                self._git_command("apply", "--check", "--whitespace=nowarn", "--", temporary),
+                self._git_command("apply", "--check", "--whitespace=nowarn", "--", temporary, root=root),
                 root,
                 timeout=max(1, int(deadline - time.monotonic())),
                 sandbox=False,
@@ -1168,7 +1185,7 @@ class WorkspaceToolService:
                     "timed_out": True,
                 }
             applied = self._run_process(
-                self._git_command("apply", "--whitespace=nowarn", "--", temporary),
+                self._git_command("apply", "--whitespace=nowarn", "--", temporary, root=root),
                 root,
                 timeout=max(1, int(deadline - time.monotonic())),
                 sandbox=False,
