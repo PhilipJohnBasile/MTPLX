@@ -358,9 +358,7 @@ public final class OnboardingOrchestrator: ObservableObject {
                 extraEnvironment: extraEnvironment
             ) {
                 if Task.isCancelled { break }
-                await MainActor.run {
-                    self?.handleDownloadEvent(event)
-                }
+                await self?.handleDownloadEvent(event)
             }
         }
     }
