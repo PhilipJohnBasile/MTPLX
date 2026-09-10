@@ -6646,9 +6646,10 @@ final class MTPLXAppCoreTests: XCTestCase {
         try Data().write(to: modelDir.appendingPathComponent("mtp.safetensors"))
         try Data().write(to: modelDir.appendingPathComponent("model.safetensors"))
         let fake = try makeExecutable(
-            named: "mtplx-slow-start",
+            named: "mtplx",
             body: """
             #!/bin/sh
+            if [ "$1" = "--version" ]; then echo "mtplx 1.0.0"; exit 0; fi
             echo "This is the long step; MTPLX is mapping the model into MLX."
             while true; do sleep 1; done
             """
@@ -6672,6 +6673,7 @@ final class MTPLXAppCoreTests: XCTestCase {
                 ]
             ),
             settingsStore: MTPLXSettingsStore(settingsURL: root.appendingPathComponent("settings.json")),
+            commandBuilder: fixtureCommandBuilder(executable: fake),
             localFanRestorer: {
                 await probe.restore()
             }
@@ -6687,7 +6689,7 @@ final class MTPLXAppCoreTests: XCTestCase {
             }
             try? await Task.sleep(nanoseconds: 50_000_000)
         }
-        XCTAssertEqual(backend.daemonState, .starting)
+        XCTAssertEqual(backend.daemonState, .starting, "Startup failed: \(String(describing: backend.runtimeUpdateFailure))")
 
         await backend.stopDaemon()
         await startTask.value
@@ -6756,7 +6758,8 @@ final class MTPLXAppCoreTests: XCTestCase {
                     )
                 ]
             ),
-            settingsStore: MTPLXSettingsStore(settingsURL: root.appendingPathComponent("settings.json"))
+            settingsStore: MTPLXSettingsStore(settingsURL: root.appendingPathComponent("settings.json")),
+            commandBuilder: fixtureCommandBuilder(executable: fake)
         )
         let handoff = expectation(description: "Open WebUI daemon-ready handoff")
         let readyTarget = LaunchTargetRecorder()
@@ -6805,7 +6808,8 @@ final class MTPLXAppCoreTests: XCTestCase {
                 port: port,
                 reasoning: "off"
             ),
-            settingsStore: MTPLXSettingsStore(settingsURL: root.appendingPathComponent("settings.json"))
+            settingsStore: MTPLXSettingsStore(settingsURL: root.appendingPathComponent("settings.json")),
+            commandBuilder: fixtureCommandBuilder(executable: fake)
         )
         let handoff = expectation(description: "Open WebUI opens without an incompatible post-start settings patch")
         let readyTarget = LaunchTargetRecorder()
@@ -8916,6 +8920,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         process.executableURL = script
         try process.run()
         defer { process.terminate() }
+        try await waitForHTTPFixture(process, port: port)
 
         let backend = MTPLXBackendStore(
             configuration: MTPLXAppConfiguration(port: port),
@@ -9042,6 +9047,7 @@ final class MTPLXAppCoreTests: XCTestCase {
         process.executableURL = script
         try process.run()
         defer { process.terminate() }
+        try await waitForHTTPFixture(process, port: port)
 
         let backend = MTPLXBackendStore(
             configuration: MTPLXAppConfiguration(port: port),
@@ -11321,6 +11327,38 @@ final class MTPLXAppCoreTests: XCTestCase {
         try body.data(using: .utf8)!.write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url
+    }
+
+    /// Runtime preparation and daemon execution must resolve the same fixture,
+    /// including on a clean runner without a user-installed MTPLX runtime.
+    private func fixtureCommandBuilder(executable: URL) -> MTPLXCommandBuilder {
+        MTPLXCommandBuilder(environment: [
+            "HOME": executable.deletingLastPathComponent().path,
+            "PATH": "\(executable.deletingLastPathComponent().path):/usr/bin:/bin",
+            "MTPLX_APP_DISABLE_STANDARD_PATHS": "1",
+        ])
+    }
+
+    /// Process.run only proves that the child was spawned. Wait for the HTTP
+    /// listener before exercising SSE so connection backoff is not test setup.
+    @MainActor
+    private func waitForHTTPFixture(_ process: Process, port: Int) async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 0.5
+        configuration.timeoutIntervalForResource = 0.5
+        configuration.waitsForConnectivity = false
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let url = URL(string: "http://127.0.0.1:\(port)/")!
+        let deadline = Date().addingTimeInterval(5)
+        while process.isRunning, Date() < deadline {
+            if let (_, response) = try? await session.data(from: url),
+               response is HTTPURLResponse {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw DaemonSupervisorError.healthTimeout
     }
 
     private func makeCompleteModel(
