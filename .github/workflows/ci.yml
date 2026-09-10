@@ -38,12 +38,23 @@ jobs:
           tests/test_workspace_tools.py
 
   swift-tests:
-    runs-on: macos-15
+    # Swift 6.3.1+ fixes task-allocator crashes during async teardown.
+    # Pin the stable toolchain instead of macos-15's Swift 6.1.2 default.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.11"
       - name: Toolchain versions
         run: |
           swift --version
           xcodebuild -version
           python3 --version
+      - name: Startup and metrics regressions
+        run: >-
+          swift test --package-path apps/MTPLXApp
+          --filter 'testBackendHeadlineDecode|testCancelDuringStartup'
       - run: swift test --package-path apps/MTPLXApp
