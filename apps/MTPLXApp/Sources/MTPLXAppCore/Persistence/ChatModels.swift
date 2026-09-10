@@ -299,7 +299,7 @@ public enum ToolTraceStatus: String, Codable, Sendable, CaseIterable {
 // user's store open.
 
 public enum ChatSchemaV1: VersionedSchema {
-    public static let versionIdentifier = Schema.Version(1, 0, 0)
+    public static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
 
     public static var models: [any PersistentModel.Type] {
         [
